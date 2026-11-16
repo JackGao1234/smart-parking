@@ -427,7 +427,14 @@
       await syncLiveParkingData(dest.lat, dest.lng, radius, dest.name);
 
       const priority = { AVAILABLE: 1, LIMITED: 2, UNKNOWN: 3, FULL: 4 };
-      const evaluated = Array.from(lotsMap.values())
+      const getSourceRank = lot => {
+        const tag = lot.sourceTag || '';
+        if (lot.availableSpaces >= 0 && (tag.startsWith('北市') || tag.startsWith('桃市'))) return 1;
+        if (tag.startsWith('北市') || tag.startsWith('桃市')) return 2;
+        return 3;
+      };
+
+      const withinRadius = Array.from(lotsMap.values())
         .map(lot => {
           const distanceMeters = calcDist(dest.lat, dest.lng, lot.lat, lot.lng);
           const totalPart = lot.totalSpaces > 0 ? String(lot.totalSpaces) : '?';
@@ -455,10 +462,17 @@
         })
         .filter(l => l.distanceMeters <= radius);
 
+      // Deduplicate: Government / Live Open Data always takes priority over nearby OSM POIs (<= 80m)
+      const govLots = withinRadius.filter(l => getSourceRank(l) <= 2);
+      const evaluated = withinRadius.filter(l => {
+        if (getSourceRank(l) <= 2) return true;
+        return !govLots.some(g => calcDist(l.lat, l.lng, g.lat, g.lng) <= 80);
+      });
+
       let rank = 1;
       currentParkingLots = evaluated
         .filter(l => !onlyAvailable || l.status === 'AVAILABLE' || l.status === 'LIMITED')
-        .sort((a, b) => (priority[a.status] - priority[b.status]) || (a.distanceMeters - b.distanceMeters))
+        .sort((a, b) => (priority[a.status] - priority[b.status]) || (getSourceRank(a) - getSourceRank(b)) || (a.distanceMeters - b.distanceMeters))
         .map(l => ({ ...l, priorityRank: l.canNavigate ? rank++ : null }));
 
       selectedSequenceIds = currentParkingLots.filter(l => l.canNavigate).slice(0, 3).map(l => l.id);
