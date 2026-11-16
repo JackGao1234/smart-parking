@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <meta name="theme-color" content="#0f172a" />
   <meta name="mobile-web-app-capable" content="yes" />
-  <title>智慧找車位 — 單選/順位導航 & 即時空位查詢</title>
+  <title>智慧找車位 — 單選/順位導航 & 路邊/路外即時空位</title>
   <link rel="manifest" href="./manifest.json" />
   <style>
     :root {
@@ -115,6 +115,10 @@
     .card-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; margin-bottom: 10px; }
     .lot-title-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-bottom: 3px; }
     .rank-tag { background: #2563eb; color: #fff; font-size: 11px; font-weight: 800; padding: 2px 7px; border-radius: 6px; }
+    .source-tag {
+      background: var(--surface-elevated); border: 1px solid var(--border); color: var(--text-muted);
+      font-size: 10.5px; font-weight: 700; padding: 1px 6px; border-radius: 6px; white-space: nowrap;
+    }
     .lot-title { font-size: 17px; font-weight: 800; }
     .lot-address { font-size: 13px; color: var(--text-muted); }
     .distance-pill { background: var(--surface-elevated); border: 1px solid var(--border); padding: 4px 10px; border-radius: 999px; font-size: 13px; font-weight: 700; white-space: nowrap; }
@@ -139,13 +143,17 @@
     }
     .seq-toggle-btn.in-seq { background: rgba(16, 185, 129, 0.18); color: #34d399; border-color: rgba(16, 185, 129, 0.5); }
     .empty-state { text-align: center; padding: 32px 18px; background: var(--surface); border: 1px dashed var(--border); border-radius: var(--radius); color: var(--text-muted); }
+    .footer-sources {
+      margin-top: 24px; padding: 14px; border-top: 1px solid var(--border);
+      font-size: 11.5px; color: var(--text-muted); line-height: 1.75;
+    }
   </style>
 </head>
 <body>
   <div class="app-shell">
     <header class="app-header">
       <div class="brand-row">
-        <span class="brand-badge">GITHUB PAGES 雲端版</span>
+        <span class="brand-badge">GITHUB PAGES</span>
         <h1>🚗 智慧找車位導航</h1>
         <a href="./anatomy.html" class="anatomy-pill">⚙️ 網路圖解</a>
       </div>
@@ -194,66 +202,30 @@
         👆 請輸入要去的目的地，或點選「🎯 目前手機定位」開始查詢
       </div>
     </main>
+
+    <footer class="footer-sources">
+      <div style="font-weight:700; color:var(--text); margin-bottom:4px;">📡 資料來源完整說明 <span id="sync-time-label" style="font-weight:400; color:var(--text-muted);"></span></div>
+      <div>• <strong>北市停管</strong>：臺北市停車管理工程處 — 路外停車場即時剩餘車位 (TCMSV_alldesc / TCMSV_allavailable)</div>
+      <div>• <strong>北市路邊</strong>：臺北市停車管理工程處 — 路邊停車格位即時地磁使用情形 (TCMSV_roadquery.xml)</div>
+      <div>• <strong>桃市交通</strong>：桃園市政府資料開放平台 — 路外停車資訊即時空位 API (data.tycg.gov.tw)</div>
+      <div>• <strong>OSM圖資</strong>：OpenStreetMap Nominatim 公開地圖停車場地標（無即時剩餘格數連線）</div>
+    </footer>
   </div>
 
   <script>
     const lotsMap = new Map();
+    let roadsideList = [];
     let currentParkingLots = [];
     let selectedSequenceIds = [];
     let activeSequenceIndex = 0;
     let lastSearchMode = null;
-    let lastTaipeiSync = 0;
-    let lastTaoyuanSync = 0;
-
-    async function fetchJsonWithCorsFallback(url) {
-      try {
-        const direct = await fetch(url, { signal: AbortSignal.timeout(4500) });
-        if (direct.ok) return await direct.json();
-      } catch {}
-      const proxies = [
-        `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
-        `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`
-      ];
-      for (const pUrl of proxies) {
-        try {
-          const res = await fetch(pUrl, { signal: AbortSignal.timeout(6500) });
-          if (res.ok) return await res.json();
-        } catch {}
-      }
-      return null;
-    }
+    let loadedPagesSnapshot = false;
 
     function calcDist(lat1, lng1, lat2, lng2) {
       const toRad = d => (d * Math.PI) / 180;
       const dLat = toRad(lat2 - lat1), dLng = toRad(lng2 - lng1);
       const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
       return Math.round(6371000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
-    }
-
-    function twd97ToWgs84(x, y) {
-      const a = 6378137.0, b = 6356752.314245, lng0 = (121 * Math.PI) / 180, k0 = 0.9999, dx = 250000;
-      const e = Math.sqrt(1 - (b ** 2) / (a ** 2));
-      const e2 = (e ** 2) / (1 - (e ** 2));
-      const xAdj = x - dx, M = y / k0;
-      const mu = M / (a * (1 - (e ** 2) / 4 - (3 * (e ** 4)) / 64 - (5 * (e ** 6)) / 256));
-      const e1 = (1 - Math.sqrt(1 - (e ** 2))) / (1 + Math.sqrt(1 - (e ** 2)));
-      const J1 = (3 * e1) / 2 - (27 * (e1 ** 3)) / 32;
-      const J2 = (21 * (e1 ** 2)) / 16 - (55 * (e1 ** 4)) / 32;
-      const J3 = (151 * (e1 ** 3)) / 96;
-      const J4 = (1097 * (e1 ** 4)) / 512;
-      const fp = mu + J1 * Math.sin(2 * mu) + J2 * Math.sin(4 * mu) + J3 * Math.sin(6 * mu) + J4 * Math.sin(8 * mu);
-      const C1 = e2 * (Math.cos(fp) ** 2), T1 = Math.tan(fp) ** 2;
-      const R1 = (a * (1 - (e ** 2))) / ((1 - (e ** 2) * (Math.sin(fp) ** 2)) ** 1.5);
-      const N1 = a / Math.sqrt(1 - (e ** 2) * (Math.sin(fp) ** 2));
-      const D = xAdj / (N1 * k0);
-      const Q1 = (N1 * Math.tan(fp)) / R1, Q2 = (D ** 2) / 2;
-      const Q3 = ((5 + 3 * T1 + 10 * C1 - 4 * (C1 ** 2) - 9 * e2) * (D ** 4)) / 24;
-      const Q4 = ((61 + 90 * T1 + 298 * C1 + 45 * (T1 ** 2) - 3 * (C1 ** 2) - 252 * e2) * (D ** 6)) / 720;
-      const latRad = fp - Q1 * (Q2 - Q3 + Q4);
-      const Q5 = D, Q6 = ((1 + 2 * T1 + C1) * (D ** 3)) / 6;
-      const Q7 = ((5 - 2 * C1 + 28 * T1 - 3 * (C1 ** 2) + 8 * e2 + 24 * (T1 ** 2)) * (D ** 5)) / 120;
-      const lngRad = lng0 + (Q5 - Q6 + Q7) / Math.cos(fp);
-      return { lat: Number(((latRad * 180) / Math.PI).toFixed(6)), lng: Number(((lngRad * 180) / Math.PI).toFixed(6)) };
     }
 
     function cleanPlaceText(text) {
@@ -264,7 +236,7 @@
     function formatStopQuery(lot) {
       const cleanName = cleanPlaceText(lot.name);
       const cleanAddr = cleanPlaceText(lot.address);
-      if (/[路街大道段巷弄號]/.test(cleanAddr) && cleanName) {
+      if (/[路街大道段巷弄號]/.test(cleanAddr) && cleanName && !lot.id.startsWith('tpe-road-')) {
         return cleanAddr.includes(cleanName) ? cleanAddr : `${cleanAddr} ${cleanName}`;
       }
       return /[路街大道段巷弄號]/.test(cleanAddr) ? cleanAddr : `${lot.lat},${lot.lng}`;
@@ -299,7 +271,7 @@
 
       async function tryNominatim() {
         try {
-          const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(norm)}&countrycodes=tw&limit=1`);
+          const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(norm)}&countrycodes=tw&limit=1&accept-language=zh-TW`);
           const data = await res.json();
           if (Array.isArray(data) && data.length > 0) {
             const lat = Number(data[0].lat), lng = Number(data[0].lon);
@@ -324,72 +296,92 @@
       return isDoorplate ? ((await tryArcGis()) || (await tryNominatim())) : ((await tryNominatim()) || (await tryArcGis()));
     }
 
-    async function syncLiveParkingData(lat, lng, radius) {
-      if (lat >= 24.95 && lat <= 25.21 && lng >= 121.45 && lng <= 121.66 && Date.now() - lastTaipeiSync > 60000) {
-        lastTaipeiSync = Date.now();
-        const [descJson, availJson] = await Promise.all([
-          fetchJsonWithCorsFallback('https://tcgbusfs.blob.core.windows.net/blobtcmsv/TCMSV_alldesc.json'),
-          fetchJsonWithCorsFallback('https://tcgbusfs.blob.core.windows.net/blobtcmsv/TCMSV_allavailable.json')
+    async function loadGitHubSyncedData() {
+      if (loadedPagesSnapshot) return;
+      loadedPagesSnapshot = true;
+      try {
+        const [offRes, roadRes] = await Promise.all([
+          fetch('./data/live-parking.json'),
+          fetch('./data/taipei-roadside.json')
         ]);
-        if (descJson?.data?.park && availJson?.data?.park) {
-          const availMap = new Map();
-          availJson.data.park.forEach(a => availMap.set(a.id, Number(a.availablecar)));
-          descJson.data.park.forEach(p => {
-            const x = Number(p.tw97x), y = Number(p.tw97y);
-            if (!x || !y) return;
-            const c = twd97ToWgs84(x, y);
-            const rawAvail = availMap.get(p.id);
-            const hasLive = rawAvail !== undefined && rawAvail >= 0;
-            lotsMap.set(`tpe-${p.id}`, {
-              id: `tpe-${p.id}`,
-              name: p.name,
-              address: p.address?.startsWith('台北') ? p.address : `台北市${p.area || ''}${p.address || ''}`,
-              lat: c.lat,
-              lng: c.lng,
-              totalSpaces: Number(p.totalcar) || 0,
-              availableSpaces: hasLive ? rawAvail : -1,
-              hourlyRate: p.payex ? p.payex.slice(0, 32) : '依現場公告'
-            });
-          });
+        if (offRes.ok) {
+          const offData = await offRes.json();
+          if (offData.updatedAt) {
+            const d = new Date(offData.updatedAt);
+            document.getElementById('sync-time-label').textContent = `(更新: ${d.toLocaleTimeString('zh-TW', { hour12: false })})`;
+          }
+          (offData.lots || []).forEach(lot => lotsMap.set(lot.id, lot));
         }
+        if (roadRes.ok) {
+          const roadData = await roadRes.json();
+          roadsideList = roadData.roads || [];
+        }
+      } catch {}
+    }
+
+    async function syncRoadsideNearLocation(lat, lng, destName) {
+      if (!roadsideList.length || lat < 24.95 || lat > 25.21 || lng < 121.45 || lng > 121.66) return;
+
+      let roadKeyword = '';
+      const roadMatch = (destName || '').match(/([一-龥\d]+?(?:路|街|大道)(?:[一二三四五六七八九十]+段)?)/);
+      if (roadMatch) {
+        roadKeyword = roadMatch[1];
+      } else {
+        try {
+          const revRes = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&accept-language=zh-TW`);
+          if (revRes.ok) {
+            const rev = await revRes.json();
+            roadKeyword = rev.address?.road || '';
+          }
+        } catch {}
       }
 
-      if (lat >= 24.8 && lat <= 25.1 && lng >= 121.05 && lng <= 121.42 && Date.now() - lastTaoyuanSync > 60000) {
-        lastTaoyuanSync = Date.now();
-        const data = await fetchJsonWithCorsFallback('https://data.tycg.gov.tw/opendata/datalist/datasetMeta/download?id=f4cc0b12-86ac-40f9-8745-885bddc18f79&rid=0daad6e6-0632-44f5-bd25-5e1de1e9146f');
-        if (data?.parkingLots) {
-          data.parkingLots.forEach(item => {
-            const pLat = Number(item.wgsY), pLng = Number(item.wgsX);
-            if (!pLat || !pLng) return;
-            const sur = parseInt(String(item.surplusSpace), 10);
-            const hasLive = Number.isFinite(sur) && sur >= 0;
-            lotsMap.set(`tycg-${item.parkId}`, {
-              id: `tycg-${item.parkId}`,
-              name: item.parkName,
-              address: `桃園市${item.areaName || ''}${item.address || ''}`,
-              lat: pLat,
-              lng: pLng,
-              totalSpaces: Number(item.totalSpace) || 0,
-              availableSpaces: hasLive ? sur : -1,
-              hourlyRate: item.payGuide ? item.payGuide.slice(0, 30) : '依現場公告'
-            });
-          });
-        }
+      if (!roadKeyword) return;
+      const baseRoad = roadKeyword.replace(/\d+巷.*$/, '');
+      const matched = roadsideList.filter(r => r.roadName.includes(baseRoad)).slice(0, 4);
+
+      for (const r of matched) {
+        if (lotsMap.has(r.id)) continue;
+        try {
+          const geoRes = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent('台北市 ' + r.roadName)}&countrycodes=tw&limit=1`);
+          if (geoRes.ok) {
+            const items = await geoRes.json();
+            if (items.length > 0) {
+              lotsMap.set(r.id, {
+                id: r.id,
+                name: r.name,
+                address: `台北市${r.roadName}`,
+                lat: Number(Number(items[0].lat).toFixed(6)),
+                lng: Number(Number(items[0].lon).toFixed(6)),
+                totalSpaces: r.totalSpaces,
+                availableSpaces: r.availableSpaces,
+                hourlyRate: r.hourlyRate,
+                sourceTag: '北市路邊'
+              });
+            }
+          }
+        } catch {}
       }
+    }
+
+    async function syncLiveParkingData(lat, lng, radius, destName) {
+      await loadGitHubSyncedData();
+      await syncRoadsideNearLocation(lat, lng, destName);
 
       const existing = Array.from(lotsMap.values()).filter(l => calcDist(lat, lng, l.lat, l.lng) <= radius);
       if (existing.length === 0) {
         const d = Math.max(0.009, radius / 85000);
         const vb = `${(lng - d).toFixed(5)},${(lat + d).toFixed(5)},${(lng + d).toFixed(5)},${(lat - d).toFixed(5)}`;
         try {
-          const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=%5Bparking%5D&viewbox=${vb}&bounded=1&limit=20&namedetails=1&extratags=1`);
+          const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=%5Bparking%5D&viewbox=${vb}&bounded=1&limit=25&namedetails=1&extratags=1&accept-language=zh-TW`);
           const items = await res.json();
           if (Array.isArray(items)) {
             items.forEach((item, idx) => {
+              const rawName = (item.namedetails?.name || item.name || '').trim();
+              if (!rawName) return;
               const poiLat = Number(Number(item.lat).toFixed(6));
               const poiLng = Number(Number(item.lon).toFixed(6));
               const parts = (item.display_name || '').split(',').map(s => s.trim());
-              const rawName = item.namedetails?.name || item.name || parts[0] || '周邊停車場';
               const poiName = rawName.includes('停車場') ? rawName : `${rawName}停車場`;
               const poiAddr = parts.slice(0, 4).join(' ');
               const cap = parseInt(String(item.extratags?.capacity || ''), 10);
@@ -402,7 +394,8 @@
                 lng: poiLng,
                 totalSpaces: Number.isFinite(cap) && cap > 0 ? cap : 0,
                 availableSpaces: -1,
-                hourlyRate: '依現場公告'
+                hourlyRate: '依現場公告',
+                sourceTag: 'OSM圖資'
               });
             });
           }
@@ -417,7 +410,7 @@
       const resultsContainer = document.getElementById('results-container');
 
       document.getElementById('sequential-panel').innerHTML = '';
-      resultsContainer.innerHTML = `<div class="empty-state">🔍 查詢周邊停車場中...</div>`;
+      resultsContainer.innerHTML = `<div class="empty-state">🔍 查詢周邊停車場與路邊車格中...</div>`;
 
       let dest = null;
       if (lastSearchMode.type === 'coords') {
@@ -431,7 +424,7 @@
         return;
       }
 
-      await syncLiveParkingData(dest.lat, dest.lng, radius);
+      await syncLiveParkingData(dest.lat, dest.lng, radius, dest.name);
 
       const priority = { AVAILABLE: 1, LIMITED: 2, UNKNOWN: 3, FULL: 4 };
       const evaluated = Array.from(lotsMap.values())
@@ -455,6 +448,7 @@
             distanceMeters,
             status,
             statusLabel,
+            sourceTag: lot.sourceTag || 'OSM圖資',
             canNavigate,
             googleMapsNavUrl: canNavigate ? buildSingleNavUrl(lot) : null
           };
@@ -530,7 +524,11 @@
           <article class="parking-card status-${lot.status}">
             <div class="card-top">
               <div>
-                <div class="lot-title-row">${rankHtml}<h2 class="lot-title">${lot.name}</h2></div>
+                <div class="lot-title-row">
+                  ${rankHtml}
+                  <span class="source-tag">${lot.sourceTag}</span>
+                  <h2 class="lot-title">${lot.name}</h2>
+                </div>
                 <p class="lot-address">${lot.address}</p>
               </div>
               <span class="distance-pill">${lot.distanceMeters}m</span>
