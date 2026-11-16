@@ -159,16 +159,16 @@ async function fetchTaipeiRoadside() {
         10
       );
       const fee = block.match(/<roadSegFee>([^<]*)<\/roadSegFee>/)?.[1]?.trim() || '依現場收費牌';
-      const freeCells = (block.match(/<cellStatus>0<\/cellStatus>/g) || []).length;
+      const freeCells =
+        (block.match(/<cellStatus>2<\/cellStatus>/g) || []).length +
+        (block.match(/<cellStatus>0<\/cellStatus>/g) || []).length;
       const occCells = (block.match(/<cellStatus>1<\/cellStatus>/g) || []).length;
 
       let availableSpaces = -1;
       if (rawAvail >= 0) {
         availableSpaces = rawAvail;
-      } else if (freeCells > 0) {
+      } else if (freeCells > 0 || occCells > 0) {
         availableSpaces = freeCells;
-      } else if (occCells > 0 && total > 0 && occCells >= total) {
-        availableSpaces = 0;
       }
 
       results.push({
