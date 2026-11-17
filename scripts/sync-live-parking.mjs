@@ -97,6 +97,48 @@ async function fetchTaipeiOffStreet() {
   return results;
 }
 
+async function fetchNewTaipeiOffStreet() {
+  const results = [];
+  for (let page = 0; page < 3; page++) {
+    try {
+      const res = await fetch(
+        `https://data.ntpc.gov.tw/api/datasets/b1464ef0-9c7c-4a6f-abf7-6bdf32847e68/json?page=${page}&size=1000`,
+        { signal: AbortSignal.timeout(12000) }
+      );
+      if (!res.ok) break;
+      const rows = await res.json();
+      if (!Array.isArray(rows) || rows.length === 0) break;
+
+      for (const p of rows) {
+        const x = Number(p.TW97X);
+        const y = Number(p.TW97Y);
+        if (!Number.isFinite(x) || !Number.isFinite(y) || x <= 0 || y <= 0) continue;
+        const { lat, lng } = twd97ToWgs84(x, y);
+        if (lat < 24.6 || lat > 25.35 || lng < 121.25 || lng > 122.05) continue;
+
+        const area = p.AREA || '';
+        const addr = p.ADDRESS || '';
+        const fullAddr = addr.startsWith('新北') ? addr : `新北市${area}${addr}`;
+        results.push({
+          id: `ntpc-${p.ID}`,
+          name: p.NAME,
+          address: fullAddr,
+          lat,
+          lng,
+          totalSpaces: Number(p.TOTALCAR) || 0,
+          availableSpaces: -1,
+          hourlyRate: p.PAYEX ? String(p.PAYEX).slice(0, 32) : '依現場公告',
+          sourceTag: '新北交通'
+        });
+      }
+      if (rows.length < 1000) break;
+    } catch {
+      break;
+    }
+  }
+  return results;
+}
+
 async function fetchTaoyuanOffStreet() {
   try {
     const res = await fetch(
@@ -207,17 +249,19 @@ async function fetchTaipeiRoadside(offStreetLots) {
 async function main() {
   await fs.mkdir(DATA_DIR, { recursive: true });
 
-  const [taipeiOffStreet, taoyuanOffStreet] = await Promise.all([
+  const [taipeiOffStreet, newTaipeiOffStreet, taoyuanOffStreet] = await Promise.all([
     fetchTaipeiOffStreet(),
+    fetchNewTaipeiOffStreet(),
     fetchTaoyuanOffStreet()
   ]);
   const taipeiRoadside = await fetchTaipeiRoadside(taipeiOffStreet);
 
   const updatedAt = new Date().toISOString();
+  const allOffStreet = [...taipeiOffStreet, ...newTaipeiOffStreet, ...taoyuanOffStreet];
   const offStreetPayload = {
     updatedAt,
-    count: taipeiOffStreet.length + taoyuanOffStreet.length,
-    lots: [...taipeiOffStreet, ...taoyuanOffStreet]
+    count: allOffStreet.length,
+    lots: allOffStreet
   };
 
   const roadsidePayload = {
@@ -238,7 +282,7 @@ async function main() {
   );
 
   console.log(
-    `Synced: ${taipeiOffStreet.length} Taipei off-street, ${taoyuanOffStreet.length} Taoyuan off-street, ${taipeiRoadside.length} Taipei roadside segments.`
+    `Synced: ${taipeiOffStreet.length} Taipei off-street, ${newTaipeiOffStreet.length} New Taipei off-street, ${taoyuanOffStreet.length} Taoyuan off-street, ${taipeiRoadside.length} Taipei roadside segments.`
   );
 }
 

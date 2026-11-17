@@ -20,7 +20,9 @@ function getSourcePriority(lot: ParkingLotView): number {
   if (lot.dataSource === 'LIVE_OPENDATA') return 1;
   if (
     lot.sourceTag &&
-    (lot.sourceTag.startsWith('北市') || lot.sourceTag.startsWith('桃市'))
+    (lot.sourceTag.startsWith('北市') ||
+      lot.sourceTag.startsWith('新北') ||
+      lot.sourceTag.startsWith('桃市'))
   ) {
     return 2;
   }

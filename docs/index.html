@@ -175,7 +175,10 @@
       </form>
 
       <div class="controls-row">
-        <button type="button" id="gps-btn" class="secondary-btn">🎯 目前手機定位</button>
+        <div style="display:flex; gap:6px; align-items:center;">
+          <button type="button" id="gps-btn" class="secondary-btn">🎯 目前手機定位</button>
+          <button type="button" id="refresh-btn" class="secondary-btn" title="重新抓取最新車位快照">🔄</button>
+        </div>
         <div class="filter-group">
           <label class="select-label" for="radius-select">
             範圍
@@ -205,11 +208,12 @@
     </main>
 
     <footer class="footer-sources">
-      <div style="font-weight:700; color:var(--text); margin-bottom:4px;">📡 資料來源完整說明 <span id="sync-time-label" style="font-weight:400; color:var(--text-muted);"></span></div>
+      <div style="font-weight:700; color:var(--text); margin-bottom:4px;">📡 資料來源完整說明 <span id="sync-time-label" style="font-weight:600;"></span></div>
       <div>• <strong>北市停管</strong>：臺北市停車管理工程處 — 路外停車場即時剩餘車位 (TCMSV_alldesc / TCMSV_allavailable)</div>
       <div>• <strong>北市路邊</strong>：臺北市停車管理工程處 — 路邊停車格位即時地磁使用情形 (TCMSV_roadquery.xml)</div>
-      <div>• <strong>桃市交通</strong>：桃園市政府資料開放平台 — 路外停車資訊即時空位 API (data.tycg.gov.tw)</div>
-      <div>• <strong>OSM圖資</strong>：OpenStreetMap Nominatim 公開地圖停車場地標（無即時剩餘格數連線）</div>
+      <div>• <strong>新北交通</strong>：新北市政府資料開放平臺 — 路外公共停車場登記資訊 (data.ntpc.gov.tw)</div>
+      <div>• <strong>桃市交通</strong>：桃園市政府資料開放平台 — 路外停車資訊即時空位 API</div>
+      <div>• <strong>OSM圖資</strong>：OpenStreetMap Nominatim 公開地圖停車場地標（無即時剩餘格數連線，含台中／桃園等區域）</div>
     </footer>
   </div>
 
@@ -317,7 +321,15 @@
       if (offData) {
         if (offData.updatedAt) {
           const d = new Date(offData.updatedAt);
-          document.getElementById('sync-time-label').textContent = `(更新: ${d.toLocaleTimeString('zh-TW', { hour12: false })})`;
+          const minsAgo = Math.max(0, Math.round((Date.now() - d.getTime()) / 60000));
+          const lbl = document.getElementById('sync-time-label');
+          if (minsAgo > 15) {
+            lbl.textContent = `(⚠️ 資料更新於 ${minsAgo} 分鐘前)`;
+            lbl.style.color = '#fbbf24';
+          } else {
+            lbl.textContent = `(即時更新於 ${minsAgo} 分鐘前 ‧ ${d.toLocaleTimeString('zh-TW', { hour12: false })})`;
+            lbl.style.color = '#34d399';
+          }
         }
         (offData.lots || []).forEach(lot => lotsMap.set(lot.id, lot));
       }
@@ -428,8 +440,8 @@
       const priority = { AVAILABLE: 1, LIMITED: 2, UNKNOWN: 3, FULL: 4 };
       const getSourceRank = lot => {
         const tag = lot.sourceTag || '';
-        if (lot.availableSpaces >= 0 && (tag.startsWith('北市') || tag.startsWith('桃市'))) return 1;
-        if (tag.startsWith('北市') || tag.startsWith('桃市')) return 2;
+        if (lot.availableSpaces >= 0 && (tag.startsWith('北市') || tag.startsWith('新北') || tag.startsWith('桃市'))) return 1;
+        if (tag.startsWith('北市') || tag.startsWith('新北') || tag.startsWith('桃市')) return 2;
         return 3;
       };
 
@@ -614,6 +626,14 @@
     document.getElementById('radius-select').onchange = performSearch;
     document.getElementById('only-available-toggle').onchange = performSearch;
     document.getElementById('gps-btn').onclick = triggerGpsLocation;
+    document.getElementById('refresh-btn').onclick = async () => {
+      try { localStorage.removeItem('parking_snapshot_v1'); } catch {}
+      loadedPagesSnapshot = false;
+      preloadPromise = loadGitHubSyncedData();
+      await preloadPromise;
+      if (lastSearchMode) await performSearch();
+      else triggerGpsLocation();
+    };
 
     document.getElementById('results-container').onclick = e => {
       const btn = e.target.closest('.seq-toggle-btn');
