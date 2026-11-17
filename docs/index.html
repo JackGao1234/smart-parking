@@ -142,6 +142,7 @@
       border-radius: 12px; padding: 0 12px; font-size: 12px; font-weight: 700; cursor: pointer; white-space: nowrap;
     }
     .seq-toggle-btn.in-seq { background: rgba(16, 185, 129, 0.18); color: #34d399; border-color: rgba(16, 185, 129, 0.5); }
+    button:disabled, input:disabled, select:disabled { opacity: 0.45; cursor: not-allowed !important; }
     .empty-state { text-align: center; padding: 32px 18px; background: var(--surface); border: 1px dashed var(--border); border-radius: var(--radius); color: var(--text-muted); }
     .footer-sources {
       margin-top: 24px; padding: 14px; border-top: 1px solid var(--border);
@@ -169,7 +170,7 @@
             value=""
             autocomplete="off"
           />
-          <button type="submit" class="primary-btn">找車位</button>
+          <button type="submit" id="search-btn" class="primary-btn">找車位</button>
         </div>
       </form>
 
@@ -563,24 +564,43 @@
       }).join('');
     }
 
+    function setControlsLocked(locked) {
+      const ids = ['destination-input', 'search-btn', 'gps-btn', 'radius-select', 'only-available-toggle'];
+      ids.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.disabled = locked;
+      });
+    }
+
     function triggerGpsLocation() {
       const gpsBtn = document.getElementById('gps-btn');
-      if (!navigator.geolocation) return;
+      const resultsContainer = document.getElementById('results-container');
+      if (!navigator.geolocation) {
+        setControlsLocked(false);
+        return;
+      }
+      setControlsLocked(true);
       gpsBtn.textContent = '📡 定位中...';
-      gpsBtn.disabled = true;
+      resultsContainer.innerHTML = `<div class="empty-state">📡 正在取得您的手機定位，請稍候...<br/><span style="font-size:12px;">（定位完成後將自動開放搜尋與範圍切換）</span></div>`;
 
       navigator.geolocation.getCurrentPosition(
-        pos => {
+        async pos => {
           gpsBtn.textContent = '🎯 目前手機定位';
-          gpsBtn.disabled = false;
           const { latitude, longitude } = pos.coords;
           document.getElementById('destination-input').value = `${latitude.toFixed(5)}, ${longitude.toFixed(5)}`;
           lastSearchMode = { type: 'coords', lat: latitude, lng: longitude, name: '目前手機定位' };
-          performSearch();
+          try {
+            await performSearch();
+          } finally {
+            setControlsLocked(false);
+          }
         },
         () => {
           gpsBtn.textContent = '🎯 目前手機定位';
-          gpsBtn.disabled = false;
+          setControlsLocked(false);
+          if (!lastSearchMode) {
+            resultsContainer.innerHTML = `<div class="empty-state">⚠️ 無法自動取得手機定位，請手動輸入目的地或再點一次「🎯 目前手機定位」</div>`;
+          }
         },
         { enableHighAccuracy: false, timeout: 10000, maximumAge: 60000 }
       );

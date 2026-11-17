@@ -579,3 +579,10 @@ body {
   border-radius: var(--radius);
   color: var(--text-muted);
 }
+
+button:disabled,
+input:disabled,
+select:disabled {
+  opacity: 0.45;
+  cursor: not-allowed !important;
+}

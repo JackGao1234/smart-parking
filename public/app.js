@@ -289,9 +289,15 @@ function renderParkingLots() {
     .join('');
 }
 
-function onGpsSuccess(pos) {
+function setControlsLocked(locked) {
+  const searchBtn = document.getElementById('search-btn');
+  [destinationInput, searchBtn, gpsBtn, radiusSelect, onlyAvailableToggle].forEach((el) => {
+    if (el) el.disabled = locked;
+  });
+}
+
+async function onGpsSuccess(pos) {
   gpsBtn.textContent = '🎯 目前手機定位';
-  gpsBtn.disabled = false;
   const { latitude, longitude } = pos.coords;
   destinationInput.value = `${latitude.toFixed(5)}, ${longitude.toFixed(5)}`;
   lastSearchMode = {
@@ -300,19 +306,25 @@ function onGpsSuccess(pos) {
     lng: longitude,
     name: '目前手機定位'
   };
-  performSearch();
+  try {
+    await performSearch();
+  } finally {
+    setControlsLocked(false);
+  }
 }
 
 function triggerGpsLocation(isManualClick = false) {
   if (!navigator.geolocation) {
+    setControlsLocked(false);
     if (isManualClick) {
       resultsContainer.innerHTML = `<div class="empty-state">⚠️ 此瀏覽器環境不支援定位 API</div>`;
     }
     return;
   }
 
+  setControlsLocked(true);
   gpsBtn.textContent = '📡 定位中...';
-  gpsBtn.disabled = true;
+  resultsContainer.innerHTML = `<div class="empty-state">📡 正在取得您的手機定位，請稍候...<br/><span style="font-size:12px;">（定位完成後將自動開放搜尋與範圍切換）</span></div>`;
 
   // Stage 1: Try high-accuracy GPS first (best for Pixel phones)
   navigator.geolocation.getCurrentPosition(
@@ -323,7 +335,7 @@ function triggerGpsLocation(isManualClick = false) {
         onGpsSuccess,
         (err) => {
           gpsBtn.textContent = '🎯 目前手機定位';
-          gpsBtn.disabled = false;
+          setControlsLocked(false);
           if (isManualClick) {
             const httpsSamePortUrl = `https://${window.location.host}`;
             const isLanHttp =
@@ -341,6 +353,8 @@ function triggerGpsLocation(isManualClick = false) {
                 }
               </div>
             `;
+          } else if (!lastSearchMode) {
+            resultsContainer.innerHTML = `<div class="empty-state">⚠️ 無法自動取得手機定位，請手動輸入目的地或再點一次「🎯 目前手機定位」</div>`;
           }
         },
         { enableHighAccuracy: false, timeout: 8000, maximumAge: 60000 }
