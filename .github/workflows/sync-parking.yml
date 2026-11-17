@@ -31,7 +31,7 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Fetch live parking data into build artifact
+      - name: Fetch live parking data into build artifact (no repo commit!)
         run: node scripts/sync-live-parking.mjs
 
       - name: Setup Pages

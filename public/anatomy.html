@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="zh-TW" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Anatomy 互動圖解：網路、防火牆與手機架站原理</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    :root {
+      --background: #0b1120;
+      --card: #151f32;
+      --border: #2e3f59;
+      --card-border: #2e3f59;
+      --foreground: #f8fafc;
+      --muted-foreground: #94a3b8;
+      --primary: #3b82f6;
+      --primary-foreground: #ffffff;
+      --secondary: #1e293b;
+      --secondary-foreground: #e2e8f0;
+    }
+    @keyframes dashFlow {
+      to { stroke-dashoffset: -40; }
+    }
+    .pipe-active {
+      stroke-dasharray: 8 6;
+      animation: dashFlow 0.9s linear infinite;
+    }
+    .iso-label {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 11px;
+      font-weight: 700;
+    }
+  </style>
+</head>
+<body class="bg-[var(--background)] text-[var(--foreground)] antialiased p-4 m-0 select-none">
+  <div class="max-w-4xl mx-auto space-y-4">
+    <div class="bg-[var(--card)] border border-[var(--border)] rounded-xl p-4">
+      <div class="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-[var(--card-border)]">
+        <div>
+          <div class="flex items-center gap-2">
+            <span class="px-2 py-0.5 text-xs font-mono font-bold rounded bg-[var(--primary)] text-[var(--primary-foreground)]">ANATOMY MACHINE</span>
+            <h1 class="text-base font-bold text-[var(--foreground)]">解剖圖鑑：為什麼手機連電腦這麼難？(網路 ‧ 防火牆 ‧ GPS 機械構造)</h1>
+          </div>
+          <p class="text-xs text-[var(--muted-foreground)] mt-1">
+            點擊下方「情境劇本」或手動扳動 4 個機械閥門，觀察封包在管線中如何流動、被哪一道閘門攔截，以及 Cloudflare Tunnel 如何一鍵繞過所有障礙。
+          </p>
+        </div>
+        <a href="/" class="px-3 py-1.5 text-xs font-bold rounded-lg bg-blue-600 text-white hover:bg-blue-500">← 返回找車位導航</a>
+      </div>
+
+      <div class="pt-3 flex flex-wrap gap-2 items-center">
+        <span class="text-xs font-semibold text-[var(--muted-foreground)]">🎬 一鍵重現今晚遇到的 5 個真實情境：</span>
+        <button onclick="applyPreset('pc_local')" class="px-2.5 py-1.5 text-xs font-semibold rounded-lg border border-[var(--border)] bg-[var(--secondary)] text-[var(--secondary-foreground)] hover:opacity-90 transition">
+          1️⃣ 電腦自己開 localhost (秒通)
+        </button>
+        <button onclick="applyPreset('http_gps_block')" class="px-2.5 py-1.5 text-xs font-semibold rounded-lg border border-[var(--border)] bg-[var(--secondary)] text-[var(--secondary-foreground)] hover:opacity-90 transition">
+          2️⃣ 手機點定位「只閃一下沒反應」
+        </button>
+        <button onclick="applyPreset('dual_nic_bug')" class="px-2.5 py-1.5 text-xs font-semibold rounded-lg border border-[var(--border)] bg-[var(--secondary)] text-[var(--secondary-foreground)] hover:opacity-90 transition">
+          3️⃣ 有線+Wi-Fi雙開 (ERR_TOO_MANY_RETRIES)
+        </button>
+        <button onclick="applyPreset('firewall_block')" class="px-2.5 py-1.5 text-xs font-semibold rounded-lg border border-[var(--border)] bg-[var(--secondary)] text-[var(--secondary-foreground)] hover:opacity-90 transition">
+          4️⃣ Windows 防火牆鐵門擋住 3000 埠
+        </button>
+        <button onclick="applyPreset('cloudflare_win')" class="px-2.5 py-1.5 text-xs font-bold rounded-lg border border-emerald-500/60 bg-emerald-500/20 text-emerald-400 hover:opacity-90 transition">
+          5️⃣ Cloudflare 加密隧道 (最終成功方案！)
+        </button>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+      <div class="bg-[var(--card)] border border-[var(--border)] rounded-xl p-3">
+        <div class="text-xs text-[var(--muted-foreground)]">連線狀態 (PACKET STATUS)</div>
+        <div id="readout-status" class="text-sm font-mono font-bold mt-1 text-emerald-400">200 OK 暢通</div>
+      </div>
+      <div class="bg-[var(--card)] border border-[var(--border)] rounded-xl p-3">
+        <div class="text-xs text-[var(--muted-foreground)]">手機 GPS 鎖頭 (SECURE CONTEXT)</div>
+        <div id="readout-gps" class="text-sm font-mono font-bold mt-1 text-emerald-400">🔓 HTTPS 已解鎖</div>
+      </div>
+      <div class="bg-[var(--card)] border border-[var(--border)] rounded-xl p-3">
+        <div class="text-xs text-[var(--muted-foreground)]">路由方向 (ROUTING PATH)</div>
+        <div id="readout-route" class="text-sm font-mono font-bold mt-1 text-[var(--foreground)]">由內向外打通隧道</div>
+      </div>
+      <div class="bg-[var(--card)] border border-[var(--border)] rounded-xl p-3">
+        <div class="text-xs text-[var(--muted-foreground)]">手機畫面結果 (BROWSER UI)</div>
+        <div id="readout-ui" class="text-sm font-mono font-bold mt-1 text-emerald-400">自動定位 + 顯示車位</div>
+      </div>
+    </div>
+
+    <div class="bg-[var(--card)] border border-[var(--border)] rounded-xl p-3 relative overflow-hidden">
+      <div class="flex items-center justify-between text-xs text-[var(--muted-foreground)] mb-2 px-1">
+        <span>⚙️ 2.5D 網路封包管線與閥門解剖視圖（可直接點擊下方控制閥切換）</span>
+        <span id="readout-url" class="font-mono text-sky-400">https://...trycloudflare.com</span>
+      </div>
+
+      <svg id="anatomy-svg" viewBox="0 0 860 360" class="w-full h-auto rounded-lg" style="background: radial-gradient(circle at 50% 45%, rgba(30,41,59,0.55), rgba(15,23,42,0.92));">
+        <defs>
+          <pattern id="iso-grid" width="40" height="23.09" patternUnits="userSpaceOnUse">
+            <path d="M 0 11.545 L 20 0 L 40 11.545 L 20 23.09 Z" fill="none" stroke="rgba(148,163,184,0.08)" stroke-width="1"/>
+          </pattern>
+        </defs>
+        <rect width="860" height="360" fill="url(#iso-grid)" />
+
+        <g id="layer-cloudflare" opacity="0.2">
+          <path id="pipe-cf-phone" d="M 145 145 L 145 65 L 385 65" fill="none" stroke="#38bdf8" stroke-width="5" stroke-linecap="round" />
+          <path id="pipe-cf-pc" d="M 710 155 L 710 65 L 485 65" fill="none" stroke="#10b981" stroke-width="5" stroke-linecap="round" />
+          <g transform="translate(385, 28)">
+            <polygon points="50,0 100,20 50,40 0,20" fill="#0284c7" stroke="#7dd3fc" stroke-width="1.5"/>
+            <polygon points="0,20 50,40 50,62 0,42" fill="#0369a1" stroke="#38bdf8" stroke-width="1"/>
+            <polygon points="100,20 50,40 50,62 100,42" fill="#075985" stroke="#38bdf8" stroke-width="1"/>
+            <text x="50" y="24" text-anchor="middle" fill="#ffffff" class="iso-label">☁️ Cloudflare</text>
+            <text x="50" y="53" text-anchor="middle" fill="#bae6fd" font-size="10" font-family="monospace">台北節點 tpe01 (HTTPS)</text>
+          </g>
+          <text x="610" y="53" text-anchor="middle" fill="#34d399" font-size="11" font-weight="bold">⚡ 電腦由內向外連出 (免開防火牆!)</text>
+        </g>
+
+        <g id="layer-lan">
+          <path id="pipe-lan-1" d="M 185 195 L 285 195" fill="none" stroke="#64748b" stroke-width="5" />
+          <path id="pipe-lan-wifi" d="M 355 180 L 435 150" fill="none" stroke="#64748b" stroke-width="4" />
+          <path id="pipe-lan-eth" d="M 355 210 L 435 235" fill="none" stroke="#64748b" stroke-width="4" />
+          <path id="pipe-asymmetric-loop" d="M 465 245 C 390 295, 320 285, 315 225" fill="none" stroke="#ef4444" stroke-width="3" stroke-dasharray="5 5" opacity="0" />
+          <path id="pipe-to-fw" d="M 490 195 L 555 195" fill="none" stroke="#64748b" stroke-width="5" />
+          <path id="pipe-fw-to-node" d="M 605 195 L 665 195" fill="none" stroke="#64748b" stroke-width="5" />
+        </g>
+
+        <g transform="translate(55, 135)">
+          <polygon points="65,0 130,25 65,50 0,25" fill="#1e293b" stroke="#60a5fa" stroke-width="2"/>
+          <polygon points="0,25 65,50 65,115 0,90" fill="#0f172a" stroke="#3b82f6" stroke-width="1.5"/>
+          <polygon points="130,25 65,50 65,115 130,90" fill="#172554" stroke="#3b82f6" stroke-width="1.5"/>
+          <text x="65" y="29" text-anchor="middle" fill="#f8fafc" class="iso-label">📱 Pixel 手機</text>
+          <g id="gps-lock-box" transform="translate(15, 58)">
+            <rect x="0" y="0" width="100" height="36" rx="6" fill="#064e3b" stroke="#10b981" stroke-width="1.5" id="gps-lock-bg"/>
+            <text x="50" y="15" text-anchor="middle" fill="#ffffff" font-size="11" font-weight="bold" id="gps-lock-title">🔓 GPS 衛星閥：開啟</text>
+            <text x="50" y="29" text-anchor="middle" fill="#a7f3d0" font-size="9.5" font-family="monospace" id="gps-lock-sub">HTTPS 安全來源</text>
+          </g>
+        </g>
+
+        <g id="node-router" transform="translate(275, 165)">
+          <polygon points="45,0 90,18 45,36 0,18" fill="#334155" stroke="#94a3b8" stroke-width="1.5"/>
+          <polygon points="0,18 45,36 45,62 0,44" fill="#1e293b" stroke="#64748b" stroke-width="1.5"/>
+          <polygon points="90,18 45,36 45,62 90,44" fill="#0f172a" stroke="#64748b" stroke-width="1.5"/>
+          <text x="45" y="22" text-anchor="middle" fill="#e2e8f0" font-size="10.5" font-weight="bold">分享器 .1.1</text>
+          <text x="45" y="52" text-anchor="middle" fill="#94a3b8" font-size="9.5" font-family="monospace">CHT3263-5G</text>
+        </g>
+
+        <g id="node-nics" transform="translate(420, 125)">
+          <g id="nic-wifi-box">
+            <rect x="0" y="0" width="82" height="42" rx="6" fill="#1e293b" stroke="#64748b" stroke-width="1.5"/>
+            <text x="41" y="17" text-anchor="middle" fill="#cbd5e1" font-size="10.5" font-weight="bold">📡 電腦 Wi-Fi</text>
+            <text x="41" y="32" text-anchor="middle" fill="#94a3b8" font-size="9.5" font-family="monospace">192.168.1.107</text>
+          </g>
+          <g id="nic-eth-box" transform="translate(0, 85)">
+            <rect x="0" y="0" width="82" height="42" rx="6" fill="#1e293b" stroke="#38bdf8" stroke-width="1.5"/>
+            <text x="41" y="17" text-anchor="middle" fill="#e2e8f0" font-size="10.5" font-weight="bold">🔌 電腦有線</text>
+            <text x="41" y="32" text-anchor="middle" fill="#38bdf8" font-size="9.5" font-family="monospace">192.168.1.102</text>
+          </g>
+        </g>
+
+        <g id="badge-asymmetric" transform="translate(335, 275)" opacity="0">
+          <rect x="0" y="0" width="215" height="36" rx="6" fill="#450a0a" stroke="#ef4444" stroke-width="1.5"/>
+          <text x="107" y="15" text-anchor="middle" fill="#fca5a5" font-size="10.5" font-weight="bold">💥 雙網卡同網段衝突！(.107進 ➔ .102出)</text>
+          <text x="107" y="29" text-anchor="middle" fill="#f87171" font-size="9.5" font-family="monospace">分享器發現網卡 MAC 跳動，重置連線</text>
+        </g>
+
+        <g id="node-firewall" transform="translate(545, 130)">
+          <rect x="0" y="0" width="66" height="125" rx="6" fill="#1e293b" stroke="#64748b" stroke-width="2"/>
+          <text x="33" y="18" text-anchor="middle" fill="#e2e8f0" font-size="10" font-weight="bold">🛡️ 防火牆</text>
+          <g id="fw-blade" transform="translate(8, 28)">
+            <rect x="0" y="0" width="50" height="62" rx="4" fill="#7f1d1d" stroke="#ef4444" stroke-width="1.5" id="fw-blade-rect"/>
+            <text x="25" y="26" text-anchor="middle" fill="#ffffff" font-size="10" font-weight="bold" id="fw-blade-text">🔒 阻擋</text>
+            <text x="25" y="42" text-anchor="middle" fill="#fca5a5" font-size="9" font-family="monospace" id="fw-blade-sub">:3000 未放行</text>
+          </g>
+          <text x="33" y="112" text-anchor="middle" fill="#94a3b8" font-size="9.5" font-family="monospace">Inbound 入站</text>
+        </g>
+
+        <g transform="translate(655, 135)">
+          <polygon points="65,0 130,25 65,50 0,25" fill="#065f46" stroke="#34d399" stroke-width="2"/>
+          <polygon points="0,25 65,50 65,115 0,90" fill="#064e3b" stroke="#10b981" stroke-width="1.5"/>
+          <polygon points="130,25 65,50 65,115 130,90" fill="#047857" stroke="#10b981" stroke-width="1.5"/>
+          <text x="65" y="28" text-anchor="middle" fill="#ffffff" class="iso-label">💻 電腦伺服器</text>
+          <text x="65" y="72" text-anchor="middle" fill="#a7f3d0" font-size="11" font-weight="bold">Node.js :3000</text>
+          <text x="65" y="90" text-anchor="middle" fill="#6ee7b7" font-size="9.5" font-family="monospace">北市/桃市 OpenData</text>
+        </g>
+      </svg>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+      <div class="bg-[var(--card)] border border-[var(--border)] rounded-xl p-3.5 flex flex-col justify-between">
+        <div>
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-bold text-[var(--foreground)]">閥門 1：連線路徑模式 (Connection Route)</span>
+            <span id="tag-v1" class="text-xs font-mono px-2 py-0.5 rounded bg-sky-500/20 text-sky-400">Cloudflare Tunnel</span>
+          </div>
+          <p class="text-xs text-[var(--muted-foreground)] mt-1">決定手機如何找到您的電腦：直接撞家裡區網，還是透過 Cloudflare 台北機房轉接。</p>
+        </div>
+        <div class="grid grid-cols-3 gap-1.5 mt-3">
+          <button onclick="setValve('route', 'localhost')" id="btn-route-localhost" class="py-1.5 px-2 text-xs font-semibold rounded border border-[var(--border)]">💻 電腦本機</button>
+          <button onclick="setValve('route', 'lan')" id="btn-route-lan" class="py-1.5 px-2 text-xs font-semibold rounded border border-[var(--border)]">🏠 家用區網 IP</button>
+          <button onclick="setValve('route', 'cloudflare')" id="btn-route-cloudflare" class="py-1.5 px-2 text-xs font-semibold rounded border border-[var(--border)]">☁️ Cloudflare</button>
+        </div>
+      </div>
+
+      <div class="bg-[var(--card)] border border-[var(--border)] rounded-xl p-3.5 flex flex-col justify-between">
+        <div>
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-bold text-[var(--foreground)]">閥門 2：網址加密協定 (HTTP vs HTTPS)</span>
+            <span id="tag-v2" class="text-xs font-mono px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400">HTTPS 加密</span>
+          </div>
+          <p class="text-xs text-[var(--muted-foreground)] mt-1">Android 規定只有 <code>https://</code> 或 <code>localhost</code> 才能打開手機 GPS 定位鎖頭！</p>
+        </div>
+        <div class="grid grid-cols-2 gap-1.5 mt-3">
+          <button onclick="setValve('protocol', 'http')" id="btn-proto-http" class="py-1.5 px-2 text-xs font-semibold rounded border border-[var(--border)]">🔓 HTTP / 本機檔 (無加密)</button>
+          <button onclick="setValve('protocol', 'https')" id="btn-proto-https" class="py-1.5 px-2 text-xs font-semibold rounded border border-[var(--border)]">🔒 HTTPS (安全加密)</button>
+        </div>
+      </div>
+
+      <div class="bg-[var(--card)] border border-[var(--border)] rounded-xl p-3.5 flex flex-col justify-between">
+        <div>
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-bold text-[var(--foreground)]">閥門 3：電腦網卡狀態 (有線 .102 + Wi-Fi .107)</span>
+            <span id="tag-v3" class="text-xs font-mono px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400">單一有線網卡</span>
+          </div>
+          <p class="text-xs text-[var(--muted-foreground)] mt-1">同一台電腦同時插網路線又連同一個 Wi-Fi 時，封包「Wi-Fi 進、有線出」會害分享器錯亂斷線。</p>
+        </div>
+        <div class="grid grid-cols-2 gap-1.5 mt-3">
+          <button onclick="setValve('nic', 'dual')" id="btn-nic-dual" class="py-1.5 px-2 text-xs font-semibold rounded border border-[var(--border)]">⚠️ 有線 + Wi-Fi 同時開</button>
+          <button onclick="setValve('nic', 'single')" id="btn-nic-single" class="py-1.5 px-2 text-xs font-semibold rounded border border-[var(--border)]">✅ 只留單一連線</button>
+        </div>
+      </div>
+
+      <div class="bg-[var(--card)] border border-[var(--border)] rounded-xl p-3.5 flex flex-col justify-between">
+        <div>
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-bold text-[var(--foreground)]">閥門 4：Windows 防火牆入站鐵門 (Inbound Firewall)</span>
+            <span id="tag-v4" class="text-xs font-mono px-2 py-0.5 rounded bg-amber-500/20 text-amber-400">預設擋死外來連線</span>
+          </div>
+          <p class="text-xs text-[var(--muted-foreground)] mt-1">防火牆預設「只擋外面連進來 (Inbound)、不擋裡面連出去 (Outbound)」。</p>
+        </div>
+        <div class="grid grid-cols-2 gap-1.5 mt-3">
+          <button onclick="setValve('firewall', 'closed')" id="btn-fw-closed" class="py-1.5 px-2 text-xs font-semibold rounded border border-[var(--border)]">🛡️ 預設關閉 (擋住 3000 埠)</button>
+          <button onclick="setValve('firewall', 'open')" id="btn-fw-open" class="py-1.5 px-2 text-xs font-semibold rounded border border-[var(--border)]">🟢 手動放行入站規則</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="bg-[var(--card)] border border-[var(--border)] rounded-xl p-4">
+      <div class="text-xs font-bold uppercase tracking-wider text-[var(--muted-foreground)] mb-1">💡 機械原理解析 (WHY THIS HAPPENS)</div>
+      <div id="explanation-box" class="text-sm leading-relaxed text-[var(--foreground)]"></div>
+    </div>
+  </div>
+
+  <script>
+    const state = { route: 'cloudflare', protocol: 'https', nic: 'single', firewall: 'closed' };
+    function applyPreset(name) {
+      if (name === 'pc_local') Object.assign(state, { route: 'localhost', protocol: 'http', nic: 'dual', firewall: 'closed' });
+      else if (name === 'http_gps_block') Object.assign(state, { route: 'lan', protocol: 'http', nic: 'single', firewall: 'open' });
+      else if (name === 'dual_nic_bug') Object.assign(state, { route: 'lan', protocol: 'https', nic: 'dual', firewall: 'open' });
+      else if (name === 'firewall_block') Object.assign(state, { route: 'lan', protocol: 'https', nic: 'single', firewall: 'closed' });
+      else if (name === 'cloudflare_win') Object.assign(state, { route: 'cloudflare', protocol: 'https', nic: 'single', firewall: 'closed' });
+      updateMachine();
+    }
+    function setValve(key, val) {
+      state[key] = val;
+      if (key === 'route' && val === 'cloudflare') state.protocol = 'https';
+      updateMachine();
+    }
+    function styleBtn(id, active, colorClass = 'border-sky-500 bg-sky-500/20 text-sky-300') {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.className = 'py-1.5 px-2 text-xs font-semibold rounded border transition ' +
+        (active ? colorClass : 'border-[var(--border)] text-[var(--muted-foreground)] hover:text-[var(--foreground)]');
+    }
+    function updateMachine() {
+      styleBtn('btn-route-localhost', state.route === 'localhost');
+      styleBtn('btn-route-lan', state.route === 'lan');
+      styleBtn('btn-route-cloudflare', state.route === 'cloudflare', 'border-emerald-500 bg-emerald-500/20 text-emerald-300');
+      styleBtn('btn-proto-http', state.protocol === 'http', 'border-amber-500 bg-amber-500/20 text-amber-300');
+      styleBtn('btn-proto-https', state.protocol === 'https', 'border-emerald-500 bg-emerald-500/20 text-emerald-300');
+      styleBtn('btn-nic-dual', state.nic === 'dual', 'border-red-500 bg-red-500/20 text-red-300');
+      styleBtn('btn-nic-single', state.nic === 'single', 'border-emerald-500 bg-emerald-500/20 text-emerald-300');
+      styleBtn('btn-fw-closed', state.firewall === 'closed', 'border-amber-500 bg-amber-500/20 text-amber-300');
+      styleBtn('btn-fw-open', state.firewall === 'open', 'border-emerald-500 bg-emerald-500/20 text-emerald-300');
+
+      document.getElementById('tag-v1').textContent = state.route === 'localhost' ? '本機迴路' : state.route === 'lan' ? '區網直連' : 'Cloudflare 隧道';
+      document.getElementById('tag-v2').textContent = state.protocol === 'https' ? 'HTTPS 加密' : 'HTTP 未加密';
+      document.getElementById('tag-v3').textContent = state.nic === 'dual' ? '雙網卡衝突中' : '單一網卡正常';
+      document.getElementById('tag-v4').textContent = state.firewall === 'open' ? '已放行入站' : '預設擋死入站';
+
+      const layerCf = document.getElementById('layer-cloudflare');
+      const pipeCfPhone = document.getElementById('pipe-cf-phone');
+      const pipeCfPc = document.getElementById('pipe-cf-pc');
+      const pipeLan1 = document.getElementById('pipe-lan-1');
+      const pipeLanWifi = document.getElementById('pipe-lan-wifi');
+      const pipeLanEth = document.getElementById('pipe-lan-eth');
+      const pipeAsym = document.getElementById('pipe-asymmetric-loop');
+      const badgeAsym = document.getElementById('badge-asymmetric');
+      const pipeToFw = document.getElementById('pipe-to-fw');
+      const pipeFwToNode = document.getElementById('pipe-fw-to-node');
+
+      [pipeCfPhone, pipeCfPc, pipeLan1, pipeLanWifi, pipeLanEth, pipeToFw, pipeFwToNode].forEach(p => {
+        p.setAttribute('class', '');
+        p.setAttribute('stroke', '#475569');
+      });
+      pipeAsym.setAttribute('opacity', '0');
+      badgeAsym.setAttribute('opacity', '0');
+
+      const fwBlade = document.getElementById('fw-blade');
+      const fwBladeRect = document.getElementById('fw-blade-rect');
+      const fwBladeText = document.getElementById('fw-blade-text');
+      const fwBladeSub = document.getElementById('fw-blade-sub');
+      if (state.firewall === 'open') {
+        fwBlade.setAttribute('transform', 'translate(8, 18)');
+        fwBladeRect.setAttribute('fill', '#064e3b');
+        fwBladeRect.setAttribute('stroke', '#10b981');
+        fwBladeText.textContent = '🟢 放行';
+        fwBladeSub.textContent = '允許連入';
+      } else {
+        fwBlade.setAttribute('transform', 'translate(8, 28)');
+        fwBladeRect.setAttribute('fill', '#7f1d1d');
+        fwBladeRect.setAttribute('stroke', '#ef4444');
+        fwBladeText.textContent = '🔒 阻擋';
+        fwBladeSub.textContent = ':3000 擋死';
+      }
+
+      const gpsAllowed = state.route === 'localhost' || state.protocol === 'https';
+      const gpsBg = document.getElementById('gps-lock-bg');
+      const gpsTitle = document.getElementById('gps-lock-title');
+      const gpsSub = document.getElementById('gps-lock-sub');
+      if (gpsAllowed) {
+        gpsBg.setAttribute('fill', '#064e3b');
+        gpsBg.setAttribute('stroke', '#10b981');
+        gpsTitle.textContent = '🔓 GPS 衛星閥：開啟';
+        gpsSub.textContent = state.route === 'localhost' ? 'localhost 特例放行' : 'HTTPS 安全來源';
+      } else {
+        gpsBg.setAttribute('fill', '#7f1d1d');
+        gpsBg.setAttribute('stroke', '#ef4444');
+        gpsTitle.textContent = '🔒 GPS 衛星閥：鎖死';
+        gpsSub.textContent = 'HTTP 5毫秒瞬間拒絕!';
+      }
+
+      const statusEl = document.getElementById('readout-status');
+      const gpsEl = document.getElementById('readout-gps');
+      const routeEl = document.getElementById('readout-route');
+      const uiEl = document.getElementById('readout-ui');
+      const urlEl = document.getElementById('readout-url');
+      const expEl = document.getElementById('explanation-box');
+
+      if (state.route === 'cloudflare') {
+        layerCf.setAttribute('opacity', '1');
+        pipeCfPhone.setAttribute('stroke', '#38bdf8');
+        pipeCfPhone.setAttribute('class', 'pipe-active');
+        pipeCfPc.setAttribute('stroke', '#10b981');
+        pipeCfPc.setAttribute('class', 'pipe-active');
+        statusEl.textContent = '✅ 200 OK (雲端隧道)';
+        statusEl.className = 'text-sm font-mono font-bold mt-1 text-emerald-400';
+        gpsEl.textContent = '🔓 正式 HTTPS 已解鎖';
+        gpsEl.className = 'text-sm font-mono font-bold mt-1 text-emerald-400';
+        routeEl.textContent = '電腦主動向外連 Cloudflare';
+        uiEl.textContent = '🎉 自動定位 + 顯示車位';
+        uiEl.className = 'text-sm font-mono font-bold mt-1 text-emerald-400';
+        urlEl.textContent = 'https://...trycloudflare.com';
+        expEl.innerHTML = `<strong class="text-emerald-400">【為什麼 Cloudflare Tunnel 一舉解決所有問題？】</strong><br/>1. <strong>巧妙繞過 Windows 防火牆</strong>：Windows 防火牆是一道「單向門」——它只擋<strong>外面連進電腦 (Inbound)</strong>，但完全不擋<strong>電腦自己連出去外面 (Outbound)</strong>！<code>cloudflared</code> 是由您的電腦主動向外連到 Cloudflare 台北機房 (<code>tpe01</code>) 建立專線，所以完全不必改任何防火牆設定！<br/>2. <strong>自帶正式 HTTPS 綠鎖頭</strong>：Cloudflare 自動幫這個網址掛上正式的 SSL 加密憑證，Pixel 手機看到是安全的 <code>https://</code>，就會立刻解開 GPS 衛星定位鎖頭！<br/>3. <strong>出門開車 4G/5G 也能用</strong>：因為走的是網際網路，您的手機就算離開家裡 Wi-Fi、在路上用 4G/5G 開車也能隨時連線！`;
+        return;
+      }
+
+      layerCf.setAttribute('opacity', '0.15');
+      if (state.route === 'localhost') {
+        pipeFwToNode.setAttribute('stroke', '#10b981');
+        pipeFwToNode.setAttribute('class', 'pipe-active');
+        statusEl.textContent = '✅ 200 OK (電腦本機)';
+        statusEl.className = 'text-sm font-mono font-bold mt-1 text-emerald-400';
+        gpsEl.textContent = '🔓 localhost 特例允許';
+        gpsEl.className = 'text-sm font-mono font-bold mt-1 text-emerald-400';
+        routeEl.textContent = '電腦內部迴路 (不經網卡)';
+        uiEl.textContent = '💻 電腦出現經緯度 (手機連不到)';
+        uiEl.className = 'text-sm font-mono font-bold mt-1 text-sky-400';
+        urlEl.textContent = 'http://localhost:3000';
+        expEl.innerHTML = `<strong class="text-sky-400">【為什麼剛剛在電腦上開 localhost:3000 會有經緯度，手機卻沒有？】</strong><br/>當您在電腦開 <code>http://localhost:3000</code> 時，封包根本沒有離開電腦（完全不經過分享器、不經過雙網卡、也不經過 Windows 防火牆鐵門）。<br/>更重要的是，Chrome 瀏覽器有一條特別豁免規則：<strong>只有 <code>localhost</code> 雖然是 <code>http://</code>，仍被特例當作安全環境</strong>，所以電腦版點定位馬上就會出現經緯度！`;
+        return;
+      }
+
+      urlEl.textContent = `${state.protocol}://192.168.1.${state.nic === 'dual' ? '107' : '102'}:3000`;
+      pipeLan1.setAttribute('stroke', '#38bdf8');
+      pipeLan1.setAttribute('class', 'pipe-active');
+
+      if (state.nic === 'dual') {
+        pipeLanWifi.setAttribute('stroke', '#f59e0b');
+        pipeLanWifi.setAttribute('class', 'pipe-active');
+        pipeAsym.setAttribute('opacity', '1');
+        pipeAsym.setAttribute('class', 'pipe-active');
+        badgeAsym.setAttribute('opacity', '1');
+        statusEl.textContent = '💥 ERR_TOO_MANY_RETRIES';
+        statusEl.className = 'text-sm font-mono font-bold mt-1 text-red-400';
+        gpsEl.textContent = '⛔ 網頁根本打不開';
+        gpsEl.className = 'text-sm font-mono font-bold mt-1 text-red-400';
+        routeEl.textContent = '.107 進 ➔ .102 出 (路由錯亂)';
+        uiEl.textContent = '❌ 無法連上這個網站';
+        uiEl.className = 'text-sm font-mono font-bold mt-1 text-red-400';
+        expEl.innerHTML = `<strong class="text-red-400">【陷阱 A：為什麼電腦同時開「有線 + Wi-Fi」會害手機連不上？】</strong><br/>您的電腦同時插著網路線 (<code>192.168.1.102</code>) 又連著 Wi-Fi (<code>192.168.1.107</code>)，兩張網卡都在同一個 <code>192.168.1.x</code> 家用網段。<br/>當手機連往 <code>.107</code> 時，封包從電腦的 Wi-Fi 網卡進來；但 Windows 發現有線網路速度比較快，竟然<strong>改從有線網卡 (<code>.102</code>) 把回應封包吐回去</strong>（請看圖中紅色虛線迴路）！中華電信分享器看到同一個連線的網卡地址變來變去，直接切斷重試，手機就跳出 <code>ERR_TOO_MANY_RETRIES</code>！`;
+        return;
+      }
+
+      pipeLanEth.setAttribute('stroke', '#38bdf8');
+      pipeLanEth.setAttribute('class', 'pipe-active');
+      pipeToFw.setAttribute('stroke', '#38bdf8');
+      pipeToFw.setAttribute('class', 'pipe-active');
+
+      if (state.firewall === 'closed') {
+        statusEl.textContent = '🛡️ 被防火牆鐵門擋下';
+        statusEl.className = 'text-sm font-mono font-bold mt-1 text-red-400';
+        gpsEl.textContent = '⛔ 網頁連不進去';
+        gpsEl.className = 'text-sm font-mono font-bold mt-1 text-red-400';
+        routeEl.textContent = '卡在電腦防火牆 3000 埠門外';
+        uiEl.textContent = '❌ 無法連上這個網站 (逾時)';
+        uiEl.className = 'text-sm font-mono font-bold mt-1 text-red-400';
+        expEl.innerHTML = `<strong class="text-red-400">【陷阱 B：關掉電腦 Wi-Fi 後，為什麼手機還是連不進 192.168.1.102:3000？】</strong><br/>請看圖中紅色的<strong>「🛡️ Windows 防火牆鐵門」</strong>：當您在電腦啟動一個新程式（<code>node.exe</code> 的 <code>3000</code> 埠）時，Windows 防火牆為了保護電腦，預設會把所有「從外面（包含您自己的手機）連進來電腦」的封包全部擋在鐵門外，所以手機一直轉圈圈連不上！`;
+        return;
+      }
+
+      pipeFwToNode.setAttribute('stroke', '#10b981');
+      pipeFwToNode.setAttribute('class', 'pipe-active');
+
+      if (state.protocol === 'http') {
+        statusEl.textContent = '✅ 200 OK (網頁可開)';
+        statusEl.className = 'text-sm font-mono font-bold mt-1 text-emerald-400';
+        gpsEl.textContent = '🔒 HTTP 被手機秒拒 (5ms)';
+        gpsEl.className = 'text-sm font-mono font-bold mt-1 text-amber-400';
+        routeEl.textContent = '區網直通 (但未加密)';
+        uiEl.textContent = '⚡ 點定位「只閃一下沒反應」';
+        uiEl.className = 'text-sm font-mono font-bold mt-1 text-amber-400';
+        expEl.innerHTML = `<strong class="text-amber-400">【陷阱 C：為什麼手機打開 http://192.168.1.102:3000 點「目前手機定位」只會閃一下？】</strong><br/>請看圖中左邊 Pixel 手機上的<strong>「🔒 GPS 衛星閥」</strong>：因為 GPS 座標屬於極高敏感度的個人隱私，Google Android 規定<strong>只要網址開頭是沒加密的 <code>http://</code>（而非 <code>https://</code>）</strong>，Chrome 會在 <strong>0.005 秒內直接拒絕定位請求</strong>，連權限視窗都不給跳，所以按鈕文字從「定位中」瞬間變回原狀，看起來就像「只閃了一下」！`;
+        return;
+      }
+
+      statusEl.textContent = '✅ 200 OK (區網 HTTPS)';
+      statusEl.className = 'text-sm font-mono font-bold mt-1 text-emerald-400';
+      gpsEl.textContent = '🔓 HTTPS 已解鎖';
+      gpsEl.className = 'text-sm font-mono font-bold mt-1 text-emerald-400';
+      routeEl.textContent = '區網單網卡 + 防火牆已開';
+      uiEl.textContent = '🎉 定位成功 (僅限家裡 Wi-Fi)';
+      uiEl.className = 'text-sm font-mono font-bold mt-1 text-emerald-400';
+      expEl.innerHTML = `<strong class="text-emerald-400">【區網全部打通狀態】</strong><br/>當「單一網卡 + 防火牆開門 + HTTPS 憑證」三者同時滿足時，家裡區網就能定位。但缺點是一旦您開車出門（手機變成 4G/5G 網路），手機就連不到家裡的 <code>192.168.1.102</code> 了——所以實務上還是 <strong>5️⃣ Cloudflare 加密隧道</strong> 最省事且出門也能用！`;
+    }
+    applyPreset('cloudflare_win');
+  </script>
+</body>
+</html>

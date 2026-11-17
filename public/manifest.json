@@ -1,0 +1,9 @@
+{
+  "name": "智慧找車位導航",
+  "short_name": "找車位導航",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0b1120",
+  "theme_color": "#0f172a",
+  "description": "即時搜尋目的地周邊有空位的停車場，自動標記滿位並支援一鍵切換 Google Maps 汽車導航"
+}

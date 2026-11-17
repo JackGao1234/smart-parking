@@ -1,0 +1,26 @@
+{
+  "name": "smart-parking-finder",
+  "version": "1.0.0",
+  "description": "Taiwan Smart Parking Finder with Real-time Vacancy Filtering and One-Click Google Maps Navigation",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "tunnel": "npx --yes cloudflared tunnel --url http://localhost:3000",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.2",
+    "@types/supertest": "^6.0.2",
+    "supertest": "^7.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
