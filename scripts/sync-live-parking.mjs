@@ -130,7 +130,7 @@ async function fetchTaoyuanOffStreet() {
   }
 }
 
-async function fetchTaipeiRoadside() {
+async function fetchTaipeiRoadside(offStreetLots) {
   try {
     const res = await fetch('https://tcgbusfs.blob.core.windows.net/blobtcmsv/TCMSV_roadquery.xml', {
       signal: AbortSignal.timeout(20000)
@@ -138,12 +138,20 @@ async function fetchTaipeiRoadside() {
     if (!res.ok) return [];
     const xml = await res.text();
     const roads = [...xml.matchAll(/<ROAD>([\s\S]*?)<\/ROAD>/g)];
-    const results = [];
 
+    // Build a fast street-name -> centroid coordinate index from the 1,767 off-street lots
+    const streetIndex = [];
+    for (const lot of offStreetLots) {
+      const m = (lot.address || '').match(/([一-龥\d]+?(?:路|街|大道)(?:[一二三四五六七八九十]+段)?)/);
+      if (m) {
+        streetIndex.push({ street: m[1], lat: lot.lat, lng: lot.lng });
+      }
+    }
+
+    const results = [];
     for (const m of roads) {
       const block = m[1];
       const carType = block.match(/<roadSegCarType>([^<]*)<\/roadSegCarType>/)?.[1];
-      // Include car roadside segments (1) or unspecified
       if (carType && carType !== '1') continue;
 
       const id = block.match(/<roadSegID>([^<]*)<\/roadSegID>/)?.[1]?.trim();
@@ -171,10 +179,19 @@ async function fetchTaipeiRoadside() {
         availableSpaces = freeCells;
       }
 
+      // Match street coordinate from off-street index (zero extra API calls!)
+      const baseStreet = name.replace(/\d+巷.*$/, '').replace(/\d+弄.*$/, '');
+      const hit =
+        streetIndex.find((s) => s.street === baseStreet) ||
+        streetIndex.find((s) => baseStreet.includes(s.street) || s.street.includes(baseStreet));
+
       results.push({
         id: `tpe-road-${id}`,
         name: `${name} (路邊停車格)`,
         roadName: name,
+        address: `台北市${name}`,
+        lat: hit ? hit.lat : null,
+        lng: hit ? hit.lng : null,
         totalSpaces: Number.isFinite(total) ? total : 0,
         availableSpaces,
         hourlyRate: fee,
@@ -190,11 +207,11 @@ async function fetchTaipeiRoadside() {
 async function main() {
   await fs.mkdir(DATA_DIR, { recursive: true });
 
-  const [taipeiOffStreet, taoyuanOffStreet, taipeiRoadside] = await Promise.all([
+  const [taipeiOffStreet, taoyuanOffStreet] = await Promise.all([
     fetchTaipeiOffStreet(),
-    fetchTaoyuanOffStreet(),
-    fetchTaipeiRoadside()
+    fetchTaoyuanOffStreet()
   ]);
+  const taipeiRoadside = await fetchTaipeiRoadside(taipeiOffStreet);
 
   const updatedAt = new Date().toISOString();
   const offStreetPayload = {

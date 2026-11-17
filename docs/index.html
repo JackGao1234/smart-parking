@@ -262,119 +262,117 @@
       return `https://www.google.com/maps/dir/?${p.toString()}`;
     }
 
+    const geocodeCache = new Map();
+    let preloadPromise = null;
+
     async function geocodeQuery(q) {
       const norm = q.trim().replace(/臺/g, '台');
       const coordMatch = norm.match(/^(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)$/);
       if (coordMatch) return { lat: Number(coordMatch[1]), lng: Number(coordMatch[2]), name: norm };
 
+      if (geocodeCache.has(norm)) return geocodeCache.get(norm);
+      try {
+        const cached = localStorage.getItem('geo:' + norm);
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          geocodeCache.set(norm, parsed);
+          return parsed;
+        }
+      } catch {}
+
       const inTw = (lat, lng) => lat >= 21.8 && lat <= 25.45 && lng >= 119.3 && lng <= 122.2;
-      const isDoorplate = /[路街大道段巷弄號]/.test(norm);
 
       async function tryNominatim() {
-        try {
-          const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(norm)}&countrycodes=tw&limit=1&accept-language=zh-TW`);
-          const data = await res.json();
-          if (Array.isArray(data) && data.length > 0) {
-            const lat = Number(data[0].lat), lng = Number(data[0].lon);
-            if (inTw(lat, lng)) return { lat, lng, name: norm };
-          }
-        } catch {}
-        return null;
+        const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(norm)}&countrycodes=tw&limit=1&accept-language=zh-TW`, { signal: AbortSignal.timeout(3000) });
+        const data = await res.json();
+        if (Array.isArray(data) && data.length > 0) {
+          const lat = Number(data[0].lat), lng = Number(data[0].lon);
+          if (inTw(lat, lng)) return { lat, lng, name: norm };
+        }
+        throw new Error('no nominatim match');
       }
 
       async function tryArcGis() {
-        try {
-          const res = await fetch(`https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates?f=json&singleLine=${encodeURIComponent(norm)}&countryCode=TWN&searchExtent=119.3,21.8,122.2,25.45&maxLocations=1`);
-          const data = await res.json();
-          if (data.candidates && data.candidates.length > 0 && data.candidates[0].score >= 75 && data.candidates[0].address !== '台灣') {
-            const lat = data.candidates[0].location.y, lng = data.candidates[0].location.x;
-            if (inTw(lat, lng)) return { lat, lng, name: norm };
-          }
-        } catch {}
-        return null;
+        const res = await fetch(`https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates?f=json&singleLine=${encodeURIComponent(norm)}&countryCode=TWN&searchExtent=119.3,21.8,122.2,25.45&maxLocations=1`, { signal: AbortSignal.timeout(3000) });
+        const data = await res.json();
+        if (data.candidates && data.candidates.length > 0 && data.candidates[0].score >= 75 && data.candidates[0].address !== '台灣') {
+          const lat = data.candidates[0].location.y, lng = data.candidates[0].location.x;
+          if (inTw(lat, lng)) return { lat, lng, name: norm };
+        }
+        throw new Error('no arcgis match');
       }
 
-      return isDoorplate ? ((await tryArcGis()) || (await tryNominatim())) : ((await tryNominatim()) || (await tryArcGis()));
+      try {
+        // Race both geocoders in parallel for fastest possible response
+        const hit = await Promise.any([tryNominatim(), tryArcGis()]);
+        geocodeCache.set(norm, hit);
+        try { localStorage.setItem('geo:' + norm, JSON.stringify(hit)); } catch {}
+        return hit;
+      } catch {
+        return null;
+      }
+    }
+
+    function applyParkingSnapshot(offData, roadData) {
+      if (offData) {
+        if (offData.updatedAt) {
+          const d = new Date(offData.updatedAt);
+          document.getElementById('sync-time-label').textContent = `(更新: ${d.toLocaleTimeString('zh-TW', { hour12: false })})`;
+        }
+        (offData.lots || []).forEach(lot => lotsMap.set(lot.id, lot));
+      }
+      if (roadData) {
+        roadsideList = roadData.roads || [];
+        roadsideList.forEach(r => {
+          if (Number.isFinite(r.lat) && Number.isFinite(r.lng)) {
+            lotsMap.set(r.id, r);
+          }
+        });
+      }
     }
 
     async function loadGitHubSyncedData() {
       if (loadedPagesSnapshot) return;
       loadedPagesSnapshot = true;
+
+      // 1. Instant localStorage warm cache (< 5ms)
+      try {
+        const raw = localStorage.getItem('parking_snapshot_v1');
+        if (raw) {
+          const cached = JSON.parse(raw);
+          if (Date.now() - cached.savedAt < 300000) {
+            applyParkingSnapshot(cached.offData, cached.roadData);
+            return;
+          }
+        }
+      } catch {}
+
+      // 2. Parallel fetch from GitHub Pages CDN
       try {
         const [offRes, roadRes] = await Promise.all([
           fetch('./data/live-parking.json'),
           fetch('./data/taipei-roadside.json')
         ]);
-        if (offRes.ok) {
-          const offData = await offRes.json();
-          if (offData.updatedAt) {
-            const d = new Date(offData.updatedAt);
-            document.getElementById('sync-time-label').textContent = `(更新: ${d.toLocaleTimeString('zh-TW', { hour12: false })})`;
-          }
-          (offData.lots || []).forEach(lot => lotsMap.set(lot.id, lot));
-        }
-        if (roadRes.ok) {
-          const roadData = await roadRes.json();
-          roadsideList = roadData.roads || [];
-        }
+        const offData = offRes.ok ? await offRes.json() : null;
+        const roadData = roadRes.ok ? await roadRes.json() : null;
+        applyParkingSnapshot(offData, roadData);
+        try {
+          localStorage.setItem('parking_snapshot_v1', JSON.stringify({ savedAt: Date.now(), offData, roadData }));
+        } catch {}
       } catch {}
     }
 
-    async function syncRoadsideNearLocation(lat, lng, destName) {
-      if (!roadsideList.length || lat < 24.95 || lat > 25.21 || lng < 121.45 || lng > 121.66) return;
-
-      let roadKeyword = '';
-      const roadMatch = (destName || '').match(/([一-龥\d]+?(?:路|街|大道)(?:[一二三四五六七八九十]+段)?)/);
-      if (roadMatch) {
-        roadKeyword = roadMatch[1];
-      } else {
-        try {
-          const revRes = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&accept-language=zh-TW`);
-          if (revRes.ok) {
-            const rev = await revRes.json();
-            roadKeyword = rev.address?.road || '';
-          }
-        } catch {}
-      }
-
-      if (!roadKeyword) return;
-      const baseRoad = roadKeyword.replace(/\d+巷.*$/, '');
-      const matched = roadsideList.filter(r => r.roadName.includes(baseRoad)).slice(0, 4);
-
-      for (const r of matched) {
-        if (lotsMap.has(r.id)) continue;
-        try {
-          const geoRes = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent('台北市 ' + r.roadName)}&countrycodes=tw&limit=1`);
-          if (geoRes.ok) {
-            const items = await geoRes.json();
-            if (items.length > 0) {
-              lotsMap.set(r.id, {
-                id: r.id,
-                name: r.name,
-                address: `台北市${r.roadName}`,
-                lat: Number(Number(items[0].lat).toFixed(6)),
-                lng: Number(Number(items[0].lon).toFixed(6)),
-                totalSpaces: r.totalSpaces,
-                availableSpaces: r.availableSpaces,
-                hourlyRate: r.hourlyRate,
-                sourceTag: '北市路邊'
-              });
-            }
-          }
-        } catch {}
-      }
-    }
-
     async function syncLiveParkingData(lat, lng, radius, destName) {
-      await loadGitHubSyncedData();
-      await syncRoadsideNearLocation(lat, lng, destName);
+      if (preloadPromise) await preloadPromise;
+      else await loadGitHubSyncedData();
 
+      // Only hit external Nominatim [parking] if ZERO official/roadside lots exist in radius
       const existing = Array.from(lotsMap.values()).filter(l => calcDist(lat, lng, l.lat, l.lng) <= radius);
       if (existing.length === 0) {
         const d = Math.max(0.009, radius / 85000);
         const vb = `${(lng - d).toFixed(5)},${(lat + d).toFixed(5)},${(lng + d).toFixed(5)},${(lat - d).toFixed(5)}`;
         try {
-          const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=%5Bparking%5D&viewbox=${vb}&bounded=1&limit=25&namedetails=1&extratags=1&accept-language=zh-TW`);
+          const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=%5Bparking%5D&viewbox=${vb}&bounded=1&limit=25&namedetails=1&extratags=1&accept-language=zh-TW`, { signal: AbortSignal.timeout(3000) });
           const items = await res.json();
           if (Array.isArray(items)) {
             items.forEach((item, idx) => {
@@ -628,6 +626,8 @@
       renderLots();
     };
 
+    // Preload parking snapshot immediately in parallel with GPS acquisition!
+    preloadPromise = loadGitHubSyncedData();
     triggerGpsLocation();
   </script>
 </body>
