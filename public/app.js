@@ -293,16 +293,42 @@ function setControlsLocked(locked) {
   });
 }
 
+const LAST_SEARCH_KEY = 'smart_parking_last_search_v1';
+
+function saveLastSearch(mode, inputText) {
+  try {
+    localStorage.setItem(LAST_SEARCH_KEY, JSON.stringify({ mode, inputText }));
+  } catch {}
+}
+
+function loadLastSearch() {
+  try {
+    const raw = localStorage.getItem(LAST_SEARCH_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !parsed.mode) return null;
+    if (parsed.mode.type === 'query' && typeof parsed.mode.query === 'string' && parsed.mode.query.trim()) {
+      return parsed;
+    }
+    if (parsed.mode.type === 'coords' && Number.isFinite(parsed.mode.lat) && Number.isFinite(parsed.mode.lng)) {
+      return parsed;
+    }
+  } catch {}
+  return null;
+}
+
 async function onGpsSuccess(pos) {
   gpsBtn.textContent = '🎯 目前手機定位';
   const { latitude, longitude } = pos.coords;
-  destinationInput.value = `${latitude.toFixed(5)}, ${longitude.toFixed(5)}`;
+  const coordText = `${latitude.toFixed(5)}, ${longitude.toFixed(5)}`;
+  destinationInput.value = coordText;
   lastSearchMode = {
     type: 'coords',
     lat: latitude,
     lng: longitude,
     name: '目前手機定位'
   };
+  saveLastSearch(lastSearchMode, coordText);
   try {
     await performSearch();
   } finally {
@@ -366,6 +392,7 @@ searchForm.addEventListener('submit', (e) => {
   const q = destinationInput.value.trim();
   if (!q) return;
   lastSearchMode = { type: 'query', query: q };
+  saveLastSearch(lastSearchMode, q);
   performSearch();
 });
 
@@ -393,5 +420,13 @@ resultsContainer.addEventListener('click', (e) => {
   renderParkingLots();
 });
 
-// Auto-trigger phone GPS location immediately on page open
-triggerGpsLocation(false);
+// Default to last search on this device; fall back to GPS on first visit
+const savedSearch = loadLastSearch();
+if (savedSearch) {
+  lastSearchMode = savedSearch.mode;
+  destinationInput.value =
+    savedSearch.inputText || (savedSearch.mode.type === 'query' ? savedSearch.mode.query : '');
+  performSearch();
+} else {
+  triggerGpsLocation(false);
+}
