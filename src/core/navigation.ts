@@ -17,7 +17,11 @@ export function cleanPlaceText(text?: string): string {
 }
 
 /**
- * Formats a single parking lot into a clean Google Maps place query string.
+ * Formats a single parking lot into a precise Google Maps query string.
+ * IMPORTANT: Only uses text (`address + name`) when the address has an exact street
+ * doorplate number (`號`). When there is no doorplate number (e.g. OSM "廍子路 廍子里 北屯區"),
+ * we MUST return exact `${lat},${lng}` coordinates so Google Maps never fuzzy-matches
+ * a completely different parking lot miles away on the same road!
  */
 export function formatGoogleMapsStopQuery(
   lat: number,
@@ -31,20 +35,21 @@ export function formatGoogleMapsStopQuery(
 
   const cleanName = cleanPlaceText(name);
   const cleanAddr = cleanPlaceText(address);
-  const hasRealStreetAddr = /[路街大道段巷弄號]/.test(cleanAddr);
+  const hasExactDoorplate = /\d+(?:之\d+)?號/.test(cleanAddr);
 
-  if (hasRealStreetAddr && cleanName) {
+  if (hasExactDoorplate && cleanName) {
     return cleanAddr.includes(cleanName) ? cleanAddr : `${cleanAddr} ${cleanName}`;
   }
-  if (hasRealStreetAddr) {
+  if (hasExactDoorplate) {
     return cleanAddr;
   }
   return `${lat},${lng}`;
 }
 
 /**
- * Generates a universal cross-platform Google Maps URL that launches directly into
- * turn-by-turn driving navigation for a SINGLE parking lot.
+ * Generates a universal Google Maps location preview URL (`maps/search/?api=1&query=...`)
+ * so the user sees the exact parking lot pin first and can choose their own starting point
+ * instead of jumping straight into turn-by-turn navigation.
  */
 export function buildGoogleMapsDrivingUrl(
   lat: number,
@@ -52,21 +57,20 @@ export function buildGoogleMapsDrivingUrl(
   name?: string,
   address?: string
 ): string {
-  const destinationQuery = formatGoogleMapsStopQuery(lat, lng, name, address);
+  const query = formatGoogleMapsStopQuery(lat, lng, name, address);
 
   const params = new URLSearchParams({
     api: '1',
-    destination: destinationQuery,
-    travelmode: 'driving',
-    dir_action: 'navigate'
+    query
   });
 
-  return `https://www.google.com/maps/dir/?${params.toString()}`;
+  return `https://www.google.com/maps/search/?${params.toString()}`;
 }
 
 /**
- * Generates a multi-stop sequential Google Maps driving navigation URL
- * (1st choice -> 2nd choice -> 3rd choice).
+ * Generates a multi-stop sequential Google Maps route preview URL
+ * (1st choice -> 2nd choice -> 3rd choice) without forcing immediate auto-navigation,
+ * allowing the driver to pick or adjust the starting point.
  */
 export function buildGoogleMapsSequentialUrl(
   stops: Array<{ lat: number; lng: number; name?: string; address?: string }>
@@ -87,15 +91,14 @@ export function buildGoogleMapsSequentialUrl(
     api: '1',
     destination: finalDestination,
     waypoints,
-    travelmode: 'driving',
-    dir_action: 'navigate'
+    travelmode: 'driving'
   });
 
   return `https://www.google.com/maps/dir/?${params.toString()}`;
 }
 
 /**
- * Generates a standard Google Maps location pin preview URL (non-navigation).
+ * Generates a standard Google Maps location pin preview URL.
  */
 export function buildGoogleMapsPreviewUrl(
   lat: number,
@@ -103,12 +106,7 @@ export function buildGoogleMapsPreviewUrl(
   name?: string,
   address?: string
 ): string {
-  const query = formatGoogleMapsStopQuery(lat, lng, name, address);
-  const params = new URLSearchParams({
-    api: '1',
-    query
-  });
-  return `https://www.google.com/maps/search/?${params.toString()}`;
+  return buildGoogleMapsDrivingUrl(lat, lng, name, address);
 }
 
 /**

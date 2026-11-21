@@ -241,15 +241,18 @@
     function formatStopQuery(lot) {
       const cleanName = cleanPlaceText(lot.name);
       const cleanAddr = cleanPlaceText(lot.address);
-      if (/[路街大道段巷弄號]/.test(cleanAddr) && cleanName && !lot.id.startsWith('tpe-road-')) {
+      const hasExactDoorplate = /\d+(?:之\d+)?號/.test(cleanAddr);
+      if (hasExactDoorplate && cleanName && !lot.id.startsWith('tpe-road-')) {
         return cleanAddr.includes(cleanName) ? cleanAddr : `${cleanAddr} ${cleanName}`;
       }
-      return /[路街大道段巷弄號]/.test(cleanAddr) ? cleanAddr : `${lot.lat},${lot.lng}`;
+      if (hasExactDoorplate) return cleanAddr;
+      // No exact doorplate (e.g. "廍子路 廍子里 北屯區") -> MUST use exact lat,lng so Google Maps never routes to a wrong lot on the same road!
+      return `${lot.lat},${lot.lng}`;
     }
 
     function buildSingleNavUrl(lot) {
-      const p = new URLSearchParams({ api: '1', destination: formatStopQuery(lot), travelmode: 'driving', dir_action: 'navigate' });
-      return `https://www.google.com/maps/dir/?${p.toString()}`;
+      const p = new URLSearchParams({ api: '1', query: formatStopQuery(lot) });
+      return `https://www.google.com/maps/search/?${p.toString()}`;
     }
 
     function buildMultiStopUrl(lots) {
@@ -260,8 +263,7 @@
         api: '1',
         destination: queries[queries.length - 1],
         waypoints: queries.slice(0, -1).join('|'),
-        travelmode: 'driving',
-        dir_action: 'navigate'
+        travelmode: 'driving'
       });
       return `https://www.google.com/maps/dir/?${p.toString()}`;
     }
@@ -516,7 +518,7 @@
                   <span class="seq-rank-badge">#${idx + 1}</span>
                   <span>${lot.name} (${lot.distanceMeters}m ‧ ${lot.statusLabel})</span>
                 </div>
-                <a href="${lot.googleMapsNavUrl}" target="_blank" rel="noopener" class="seq-quick-go">🚗 單導</a>
+                <a href="${lot.googleMapsNavUrl}" target="_blank" rel="noopener" class="seq-quick-go">📍 看位置</a>
               </div>
             `).join('')}
           </div>
@@ -566,7 +568,7 @@
             </div>
             <div class="card-actions">
               ${lot.canNavigate
-                ? `<a href="${lot.googleMapsNavUrl}" target="_blank" rel="noopener" class="nav-btn ${lot.status === 'UNKNOWN' ? 'unknown-nav' : ''}">${lot.status === 'UNKNOWN' ? '🚗 單選導航 (無即時資料)' : '🚗 單選直接導航'}</a>
+                ? `<a href="${lot.googleMapsNavUrl}" target="_blank" rel="noopener" class="nav-btn ${lot.status === 'UNKNOWN' ? 'unknown-nav' : ''}">${lot.status === 'UNKNOWN' ? '📍 查看位置 (無即時資料)' : '📍 Google Maps 查看位置'}</a>
                    <button type="button" class="seq-toggle-btn ${isInSeq ? 'in-seq' : ''}" data-seq-id="${lot.id}">${isInSeq ? `✓ 順位 #${seqPos + 1}` : '➕ 排入順位'}</button>`
                 : `<button type="button" class="nav-btn disabled" disabled>🔒 0 格已滿位 ‧ 鎖定導航</button>`
               }

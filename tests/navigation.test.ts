@@ -23,7 +23,7 @@ const baseLot: RawParkingLot = {
 };
 
 describe('Vacancy Classification & Google Maps Navigation Safety', () => {
-  it('builds a Google Maps driving URL using official address + name so Google Maps never reverse-geocodes to a random alley', () => {
+  it('builds a Google Maps search pin URL using official address + name so user can preview location before navigating', () => {
     const url = buildGoogleMapsDrivingUrl(
       24.95621,
       121.20775,
@@ -31,17 +31,28 @@ describe('Vacancy Classification & Google Maps Navigation Safety', () => {
       '桃園市平鎮區民族路245號 (廣達公園旁)'
     );
     const parsed = new URL(url);
-    expect(parsed.origin + parsed.pathname).toBe('https://www.google.com/maps/dir/');
+    expect(parsed.origin + parsed.pathname).toBe('https://www.google.com/maps/search/');
     expect(parsed.searchParams.get('api')).toBe('1');
-    expect(parsed.searchParams.get('destination')).toBe('桃園市平鎮區民族路245號 廣北平面停車場');
-    expect(parsed.searchParams.get('travelmode')).toBe('driving');
-    expect(parsed.searchParams.get('dir_action')).toBe('navigate');
+    expect(parsed.searchParams.get('query')).toBe('桃園市平鎮區民族路245號 廣北平面停車場');
+    expect(parsed.searchParams.get('dir_action')).toBeNull();
+  });
+
+  it('falls back to exact lat,lng when address has no doorplate number (prevents Google Maps matching distant lot on same road)', () => {
+    const url = buildGoogleMapsDrivingUrl(
+      24.15908,
+      120.73417,
+      '廍子路停車場',
+      '廍子路 廍子里 北屯區'
+    );
+    const parsed = new URL(url);
+    expect(parsed.origin + parsed.pathname).toBe('https://www.google.com/maps/search/');
+    expect(parsed.searchParams.get('query')).toBe('24.15908,120.73417');
   });
 
   it('falls back to lat,lng when name and address are omitted', () => {
     const url = buildGoogleMapsDrivingUrl(25.03582, 121.56651);
     const parsed = new URL(url);
-    expect(parsed.searchParams.get('destination')).toBe('25.03582,121.56651');
+    expect(parsed.searchParams.get('query')).toBe('25.03582,121.56651');
   });
 
   it('builds a multi-stop sequential Google Maps route URL (1st choice -> 2nd choice -> 3rd choice) for backup navigation', () => {
@@ -75,7 +86,7 @@ describe('Vacancy Classification & Google Maps Navigation Safety', () => {
       '台北市內湖區港華街100號 麗山國小地下停車場'
     );
     expect(parsed.searchParams.get('travelmode')).toBe('driving');
-    expect(parsed.searchParams.get('dir_action')).toBe('navigate');
+    expect(parsed.searchParams.get('dir_action')).toBeNull();
   });
 
   it('classifies vacancy status properly for AVAILABLE, LIMITED, FULL, and UNKNOWN', () => {
@@ -86,7 +97,7 @@ describe('Vacancy Classification & Google Maps Navigation Safety', () => {
     expect(classifyVacancyStatus(-1)).toBe('UNKNOWN');
   });
 
-  it('enables Google Maps navigation when parking lot has available spaces (> 10)', () => {
+  it('enables Google Maps location preview when parking lot has available spaces (> 10)', () => {
     const view = evaluateParkingNavigation(
       { ...baseLot, availableSpaces: 45 },
       24.95405,
@@ -95,10 +106,10 @@ describe('Vacancy Classification & Google Maps Navigation Safety', () => {
     expect(view.status).toBe('AVAILABLE');
     expect(view.canNavigate).toBe(true);
     const parsed = new URL(view.googleMapsNavUrl!);
-    expect(parsed.searchParams.get('destination')).toBe(
+    expect(parsed.origin + parsed.pathname).toBe('https://www.google.com/maps/search/');
+    expect(parsed.searchParams.get('query')).toBe(
       '桃園市平鎮區復興街85號 平鎮區文化公園地下停車場'
     );
-    expect(parsed.searchParams.get('travelmode')).toBe('driving');
     expect(view.warningMessage).toBeNull();
   });
 

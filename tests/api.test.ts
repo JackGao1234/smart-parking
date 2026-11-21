@@ -130,11 +130,11 @@ describe('Smart Parking Finder REST API Integration Tests', () => {
 
     // First lot must be available and navigable (平鎮區文化公園地下停車場 at 桃園市平鎮區復興街85號)
     expect(res.body.parkingLots[0].canNavigate).toBe(true);
-    expect(res.body.parkingLots[0].googleMapsNavUrl).toContain('travelmode=driving');
-    const firstDest = new URL(res.body.parkingLots[0].googleMapsNavUrl).searchParams.get(
-      'destination'
+    expect(res.body.parkingLots[0].googleMapsNavUrl).toContain('https://www.google.com/maps/search/?api=1&query=');
+    const firstQuery = new URL(res.body.parkingLots[0].googleMapsNavUrl).searchParams.get(
+      'query'
     );
-    expect(firstDest).toContain('平鎮區');
+    expect(firstQuery).toContain('平鎮區');
 
     // Times 平鎮文化街停車場 (-1 spaces) is marked UNKNOWN ("⚪ ? / 32 (無資料)"), NOT FULL!
     const timesLot = res.body.parkingLots.find((l: any) => l.id === 'tyn-pz-003');
@@ -173,9 +173,9 @@ describe('Smart Parking Finder REST API Integration Tests', () => {
     expect(xihuLot).toBeDefined();
     expect(xihuLot.canNavigate).toBe(true);
     expect(xihuLot.priorityRank).toBe(1);
-    const destParam = new URL(xihuLot.googleMapsNavUrl).searchParams.get('destination');
-    expect(destParam).toContain('內湖路一段387巷38號');
-    expect(destParam).toContain('西湖公園地下停車場');
+    const queryParam = new URL(xihuLot.googleMapsNavUrl).searchParams.get('query');
+    expect(queryParam).toContain('內湖路一段387巷38號');
+    expect(queryParam).toContain('西湖公園地下停車場');
 
     // Also verifies sequentialPlan (multi-stop 1st->2nd->3rd choice backup route)
     expect(res.body.sequentialPlan).toBeDefined();
@@ -220,7 +220,7 @@ describe('Smart Parking Finder REST API Integration Tests', () => {
 
     for (const lot of availableLots) {
       expect(lot.googleMapsNavUrl).toMatch(
-        /^https:\/\/www\.google\.com\/maps\/dir\/\?api=1&destination=.*&travelmode=driving&dir_action=navigate$/
+        /^https:\/\/www\.google\.com\/maps\/search\/\?api=1&query=.+$/
       );
     }
 

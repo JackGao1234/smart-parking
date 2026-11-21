@@ -23,11 +23,11 @@ function cleanPlaceText(text) {
 function formatStopQuery(lot) {
   const cleanName = cleanPlaceText(lot.name);
   const cleanAddr = cleanPlaceText(lot.address);
-  const hasRealStreetAddr = /[路街大道段巷弄號]/.test(cleanAddr);
-  if (hasRealStreetAddr && cleanName) {
+  const hasExactDoorplate = /\d+(?:之\d+)?號/.test(cleanAddr);
+  if (hasExactDoorplate && cleanName && !lot.id.startsWith('tpe-road-')) {
     return cleanAddr.includes(cleanName) ? cleanAddr : `${cleanAddr} ${cleanName}`;
   }
-  if (hasRealStreetAddr) return cleanAddr;
+  if (hasExactDoorplate) return cleanAddr;
   return `${lot.lat},${lot.lng}`;
 }
 
@@ -37,11 +37,9 @@ function buildMultiStopGoogleMapsUrl(lots) {
   if (queries.length === 1) {
     const params = new URLSearchParams({
       api: '1',
-      destination: queries[0],
-      travelmode: 'driving',
-      dir_action: 'navigate'
+      query: queries[0]
     });
-    return `https://www.google.com/maps/dir/?${params.toString()}`;
+    return `https://www.google.com/maps/search/?${params.toString()}`;
   }
   const finalDest = queries[queries.length - 1];
   const waypoints = queries.slice(0, -1).join('|');
@@ -49,8 +47,7 @@ function buildMultiStopGoogleMapsUrl(lots) {
     api: '1',
     destination: finalDest,
     waypoints,
-    travelmode: 'driving',
-    dir_action: 'navigate'
+    travelmode: 'driving'
   });
   return `https://www.google.com/maps/dir/?${params.toString()}`;
 }
@@ -225,7 +222,7 @@ function renderParkingLots() {
 
       if (lot.canNavigate && lot.googleMapsNavUrl) {
         const isUnknown = lot.status === 'UNKNOWN';
-        const btnText = isUnknown ? '🚗 單選導航 (無即時資料)' : '🚗 單選直接導航';
+        const btnText = isUnknown ? '📍 查看位置 (無即時資料)' : '📍 Google Maps 查看位置';
         actionButtonHtml = `
           <a
             href="${lot.googleMapsNavUrl}"
