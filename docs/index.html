@@ -213,7 +213,8 @@
       <div>• <strong>北市路邊</strong>：臺北市停車管理工程處 — 路邊停車格位即時地磁使用情形 (TCMSV_roadquery.xml)</div>
       <div>• <strong>新北交通</strong>：新北市政府資料開放平臺 — 路外公共停車場登記資訊 (data.ntpc.gov.tw)</div>
       <div>• <strong>桃市交通</strong>：桃園市政府資料開放平台 — 路外停車資訊即時空位 API</div>
-      <div>• <strong>OSM圖資</strong>：OpenStreetMap Nominatim 公開地圖停車場地標（無即時剩餘格數連線，含台中／桃園等區域）</div>
+      <div>• <strong>台中交通</strong>：臺中市政府資料開放平臺 — 公／民營路外停車場總表與即時燈號 API</div>
+      <div>• <strong>OSM圖資</strong>：OpenStreetMap Nominatim 公開地圖停車場地標（無即時剩餘格數連線，作為補充圖資）</div>
     </footer>
   </div>
 
@@ -444,8 +445,10 @@
       const priority = { AVAILABLE: 1, LIMITED: 2, UNKNOWN: 3, FULL: 4 };
       const getSourceRank = lot => {
         const tag = lot.sourceTag || '';
-        if (lot.availableSpaces >= 0 && (tag.startsWith('北市') || tag.startsWith('新北') || tag.startsWith('桃市'))) return 1;
-        if (tag.startsWith('北市') || tag.startsWith('新北') || tag.startsWith('桃市')) return 2;
+        const isGov = tag.startsWith('北市') || tag.startsWith('新北') || tag.startsWith('桃市') || tag.startsWith('台中');
+        const hasLive = lot.availableSpaces >= 0 || lot.liveStatus === 'AVAILABLE' || lot.liveStatus === 'LIMITED' || lot.liveStatus === 'FULL';
+        if (isGov && hasLive) return 1;
+        if (isGov) return 2;
         return 3;
       };
 
@@ -455,8 +458,20 @@
           const totalPart = lot.totalSpaces > 0 ? String(lot.totalSpaces) : '?';
           let status = 'AVAILABLE', statusLabel = `🟢 ${lot.availableSpaces} / ${totalPart}`, canNavigate = true;
           if (lot.availableSpaces < 0) {
-            status = 'UNKNOWN';
-            statusLabel = `⚪ ? / ${totalPart} (無資料)`;
+            if (lot.liveStatus === 'AVAILABLE') {
+              status = 'AVAILABLE';
+              statusLabel = `🟢 有位 (綠燈) / ${totalPart}`;
+            } else if (lot.liveStatus === 'LIMITED') {
+              status = 'LIMITED';
+              statusLabel = `🟡 較少 (黃燈) / ${totalPart}`;
+            } else if (lot.liveStatus === 'FULL') {
+              status = 'FULL';
+              statusLabel = `🚫 已滿 (紅燈) / ${totalPart}`;
+              canNavigate = false;
+            } else {
+              status = 'UNKNOWN';
+              statusLabel = `⚪ ? / ${totalPart} (無資料)`;
+            }
           } else if (lot.availableSpaces === 0) {
             status = 'FULL';
             statusLabel = `🚫 0 / ${totalPart} (已滿位)`;

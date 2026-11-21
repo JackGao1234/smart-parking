@@ -246,18 +246,195 @@ async function fetchTaipeiRoadside(offStreetLots) {
   }
 }
 
+function parseCsvRows(text) {
+  const rows = [];
+  let row = [];
+  let field = '';
+  let inQuotes = false;
+  const clean = text.replace(/^\uFEFF+/, '');
+  for (let i = 0; i < clean.length; i++) {
+    const ch = clean[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (clean[i + 1] === '"') {
+          field += '"';
+          i++;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        field += ch;
+      }
+    } else if (ch === '"') {
+      inQuotes = true;
+    } else if (ch === ',') {
+      row.push(field.trim());
+      field = '';
+    } else if (ch === '\r' || ch === '\n') {
+      if (ch === '\r' && clean[i + 1] === '\n') i++;
+      row.push(field.trim());
+      if (row.some((c) => c !== '')) rows.push(row);
+      row = [];
+      field = '';
+    } else {
+      field += ch;
+    }
+  }
+  if (field !== '' || row.length > 0) {
+    row.push(field.trim());
+    if (row.some((c) => c !== '')) rows.push(row);
+  }
+  return rows;
+}
+
+async function fetchTaichungOffStreet() {
+  try {
+    const [liveRes, coordRes, pubRes, privRes] = await Promise.all([
+      fetch(
+        'https://newdatacenter.taichung.gov.tw/api/v1/no-auth/resource.download?rid=4f9c4d26-d826-4277-8f8a-6d2469fe9653',
+        { signal: AbortSignal.timeout(15000) }
+      ),
+      fetch(
+        'https://newdatacenter.taichung.gov.tw/api/v1/no-auth/resource.download?rid=c047b32f-b57a-459c-abd4-5969885c60a6',
+        { signal: AbortSignal.timeout(15000) }
+      ),
+      fetch(
+        'https://newdatacenter.taichung.gov.tw/api/v1/no-auth/resource.download?rid=098d6e7d-9615-4f78-be30-d902436c9a02',
+        { signal: AbortSignal.timeout(15000) }
+      ),
+      fetch(
+        'https://newdatacenter.taichung.gov.tw/api/v1/no-auth/resource.download?rid=6e343cff-5508-47e2-8534-f34421b1e16b',
+        { signal: AbortSignal.timeout(15000) }
+      )
+    ]);
+
+    const coordMap = new Map();
+    if (coordRes.ok) {
+      const rows = parseCsvRows(await coordRes.text());
+      for (let i = 1; i < rows.length; i++) {
+        const [, , id, addr, latStr, lngStr] = rows[i];
+        const lat = Number(latStr);
+        const lng = Number(lngStr);
+        if (id && Number.isFinite(lat) && Number.isFinite(lng)) {
+          coordMap.set(String(id), { address: (addr || '').replace(/\?/g, ''), lat, lng });
+        }
+      }
+    }
+
+    const dirMap = new Map();
+    const ingestDir = (rows) => {
+      for (let i = 1; i < rows.length; i++) {
+        const [, , district, id, name, fee, hours, totalStr] = rows[i];
+        if (!id) continue;
+        dirMap.set(String(id), {
+          district: district || '',
+          name: name || '',
+          fee: fee || '',
+          hours: hours || '',
+          totalSpaces: Number.parseInt(String(totalStr || '0'), 10) || 0
+        });
+      }
+    };
+    if (pubRes.ok) ingestDir(parseCsvRows(await pubRes.text()));
+    if (privRes.ok) ingestDir(parseCsvRows(await privRes.text()));
+
+    const results = [];
+    const seenIds = new Set();
+
+    if (liveRes.ok) {
+      const liveList = await liveRes.json();
+      if (Array.isArray(liveList)) {
+        for (const item of liveList) {
+          const id = String(item.ID || '').trim();
+          if (!id || seenIds.has(id)) continue;
+          const c = coordMap.get(id);
+          const d = dirMap.get(id);
+          const lat = Number(item.Lat) || c?.lat;
+          const lng = Number(item.Lng) || c?.lng;
+          if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < 23.9 || lat > 24.5 || lng < 120.4 || lng > 121.5) {
+            continue;
+          }
+          seenIds.add(id);
+
+          const rawName = (item.Position || d?.name || '').trim();
+          const name = rawName.replace(/P(\([^)]+\))?$/, '停車場$1');
+          const totalCar = Number.parseInt(String(item.TotalCar || '0'), 10);
+          const totalSpaces = Number.isFinite(totalCar) && totalCar > 0 ? totalCar : d?.totalSpaces || 0;
+          const rgb = String(item.AvailableCarRGB || 'B').toUpperCase();
+
+          let availableSpaces = -1;
+          let liveStatus;
+          if (rgb === 'G') liveStatus = 'AVAILABLE';
+          else if (rgb === 'Y') liveStatus = 'LIMITED';
+          else if (rgb === 'R') {
+            availableSpaces = 0;
+            liveStatus = 'FULL';
+          }
+
+          const kw = String(item.KeyWord || '').split(/[\r\n]/)[0].trim();
+          const address = c?.address || (d?.district ? `臺中市${d.district}${kw}` : kw) || '臺中市';
+          const feeText = d?.fee ? d.fee.slice(0, 32) : '依現場公告';
+
+          results.push({
+            id: `txg-${id}`,
+            name,
+            address,
+            lat: Number(lat.toFixed(6)),
+            lng: Number(lng.toFixed(6)),
+            totalSpaces,
+            availableSpaces,
+            ...(liveStatus ? { liveStatus } : {}),
+            hourlyRate: feeText,
+            sourceTag: '台中交通'
+          });
+        }
+      }
+    }
+
+    // Include any directory+coord lots not present in liveList
+    for (const [id, c] of coordMap.entries()) {
+      if (seenIds.has(id)) continue;
+      if (c.lat < 23.9 || c.lat > 24.5 || c.lng < 120.4 || c.lng > 121.5) continue;
+      const d = dirMap.get(id);
+      const rawName = (d?.name || c.address || `停車場 ${id}`).trim();
+      const name = rawName.replace(/P(\([^)]+\))?$/, '停車場$1');
+      results.push({
+        id: `txg-${id}`,
+        name,
+        address: c.address || `臺中市${d?.district || ''}`,
+        lat: Number(c.lat.toFixed(6)),
+        lng: Number(c.lng.toFixed(6)),
+        totalSpaces: d?.totalSpaces || 0,
+        availableSpaces: -1,
+        hourlyRate: d?.fee ? d.fee.slice(0, 32) : '依現場公告',
+        sourceTag: '台中交通'
+      });
+    }
+
+    return results;
+  } catch {
+    return [];
+  }
+}
+
 async function main() {
   await fs.mkdir(DATA_DIR, { recursive: true });
 
-  const [taipeiOffStreet, newTaipeiOffStreet, taoyuanOffStreet] = await Promise.all([
+  const [taipeiOffStreet, newTaipeiOffStreet, taoyuanOffStreet, taichungOffStreet] = await Promise.all([
     fetchTaipeiOffStreet(),
     fetchNewTaipeiOffStreet(),
-    fetchTaoyuanOffStreet()
+    fetchTaoyuanOffStreet(),
+    fetchTaichungOffStreet()
   ]);
   const taipeiRoadside = await fetchTaipeiRoadside(taipeiOffStreet);
 
   const updatedAt = new Date().toISOString();
-  const allOffStreet = [...taipeiOffStreet, ...newTaipeiOffStreet, ...taoyuanOffStreet];
+  const allOffStreet = [
+    ...taipeiOffStreet,
+    ...newTaipeiOffStreet,
+    ...taoyuanOffStreet,
+    ...taichungOffStreet
+  ];
   const offStreetPayload = {
     updatedAt,
     count: allOffStreet.length,
@@ -282,7 +459,7 @@ async function main() {
   );
 
   console.log(
-    `Synced: ${taipeiOffStreet.length} Taipei off-street, ${newTaipeiOffStreet.length} New Taipei off-street, ${taoyuanOffStreet.length} Taoyuan off-street, ${taipeiRoadside.length} Taipei roadside segments.`
+    `Synced: ${taipeiOffStreet.length} Taipei off-street, ${newTaipeiOffStreet.length} New Taipei off-street, ${taoyuanOffStreet.length} Taoyuan off-street, ${taichungOffStreet.length} Taichung off-street, ${taipeiRoadside.length} Taipei roadside segments.`
   );
 }
 
