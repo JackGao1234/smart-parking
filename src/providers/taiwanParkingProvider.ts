@@ -841,23 +841,34 @@ export class TaiwanParkingProvider implements ParkingDataProvider {
           lat: string;
           lon: string;
           namedetails?: { name?: string };
-          extratags?: { capacity?: string; fee?: string };
+          extratags?: { capacity?: string; fee?: string; access?: string; parking?: string };
         }>;
 
         if (Array.isArray(items) && items.length > 0) {
           const now = new Date().toISOString();
           items.forEach((item, idx) => {
-            const rawName = (item.namedetails?.name || item.name || '').trim();
-            // Skip unnamed roadside parking bays / residential alley polygons
+            const tags = item.extratags ?? {};
+            if (
+              tags.access === 'private' ||
+              tags.access === 'no' ||
+              tags.parking === 'street_side' ||
+              tags.parking === 'lane'
+            ) {
+              return;
+            }
+            const parts = item.display_name
+              .split(',')
+              .map((s) => s.trim())
+              .filter(Boolean);
+            const rawName = (item.namedetails?.name || item.name || parts[0] || '').trim();
             if (!rawName) return;
 
             const poiLat = Number(Number(item.lat).toFixed(6));
             const poiLng = Number(Number(item.lon).toFixed(6));
-            const parts = item.display_name.split(',').map((s) => s.trim());
             const poiName = rawName.includes('停車場') ? rawName : `${rawName}停車場`;
             const poiAddr = parts.slice(0, 4).join(' ');
             const id = `osm-poi-${item.place_id || idx}`;
-            const parsedCap = Number.parseInt(String(item.extratags?.capacity ?? ''), 10);
+            const parsedCap = Number.parseInt(String(tags.capacity ?? ''), 10);
             const totalSpaces = Number.isFinite(parsedCap) && parsedCap > 0 ? parsedCap : 0;
 
             this.lots.set(id, {
