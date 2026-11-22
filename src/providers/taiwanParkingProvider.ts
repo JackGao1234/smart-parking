@@ -573,6 +573,7 @@ export class TaiwanParkingProvider implements ParkingDataProvider {
   private lastTaipeiSyncMs = 0;
   private lastTaoyuanSyncMs = 0;
   private lastRoadsideSyncMs = 0;
+  private queriedOsmAreas = new Set<string>();
   private roadsideCache: Array<{
     id: string;
     name: string;
@@ -631,13 +632,9 @@ export class TaiwanParkingProvider implements ParkingDataProvider {
         await this.syncTaoyuanOpenData();
       }
 
-      const existingNearby = Array.from(this.lots.values()).filter(
-        (lot) =>
-          calculateDistanceMeters(context.destLat, context.destLng, lot.lat, lot.lng) <=
-          context.radiusMeters
-      );
-
-      if (existingNearby.length === 0) {
+      const areaKey = `${context.destLat.toFixed(2)},${context.destLng.toFixed(2)},${context.radiusMeters}`;
+      if (!this.queriedOsmAreas.has(areaKey)) {
+        this.queriedOsmAreas.add(areaKey);
         await this.fetchRealMapParkingPois(
           context.destLat,
           context.destLng,
@@ -813,14 +810,17 @@ export class TaiwanParkingProvider implements ParkingDataProvider {
   }
 
   /**
-   * Queries real-world parking POIs around (lat, lng) using OpenStreetMap Nominatim
-   * bounded `[parking]` special phrase search.
+   * Queries real-world parking POIs around (lat, lng) using Overpass API (`amenity=parking`)
+   * with OpenStreetMap Nominatim `[parking]` as fallback. Never skips unnamed public lots.
    */
   private async fetchRealMapParkingPois(
     lat: number,
     lng: number,
     radiusMeters: number
   ): Promise<void> {
+    const addedOverpass = await this.fetchOverpassParkingPois(lat, lng, radiusMeters);
+    if (addedOverpass) return;
+
     const deltaDeg = Math.max(0.009, radiusMeters / 85000);
     const left = (lng - deltaDeg).toFixed(5);
     const top = (lat + deltaDeg).toFixed(5);
@@ -828,7 +828,7 @@ export class TaiwanParkingProvider implements ParkingDataProvider {
     const bottom = (lat - deltaDeg).toFixed(5);
 
     try {
-      const url = `https://nominatim.openstreetmap.org/search?format=json&q=%5Bparking%5D&viewbox=${left},${top},${right},${bottom}&bounded=1&limit=20&namedetails=1&extratags=1&accept-language=zh-TW`;
+      const url = `https://nominatim.openstreetmap.org/search?format=json&q=%5Bparking%5D&viewbox=${left},${top},${right},${bottom}&bounded=1&limit=30&namedetails=1&extratags=1&accept-language=zh-TW`;
       const res = await fetch(url, {
         headers: { 'User-Agent': 'SmartParkingFinderTW/1.0' },
         signal: AbortSignal.timeout(4000)
@@ -841,56 +841,125 @@ export class TaiwanParkingProvider implements ParkingDataProvider {
           lat: string;
           lon: string;
           namedetails?: { name?: string };
-          extratags?: { capacity?: string; fee?: string; access?: string; parking?: string };
+          extratags?: { capacity?: string; fee?: string; access?: string; parking?: string; operator?: string };
         }>;
 
         if (Array.isArray(items) && items.length > 0) {
           const now = new Date().toISOString();
           items.forEach((item, idx) => {
             const tags = item.extratags ?? {};
-            if (
-              tags.access === 'private' ||
-              tags.access === 'no' ||
-              tags.parking === 'street_side' ||
-              tags.parking === 'lane'
-            ) {
+            if (tags.access === 'private' || tags.access === 'no') {
               return;
             }
             const parts = item.display_name
               .split(',')
               .map((s) => s.trim())
               .filter(Boolean);
-            const rawName = (item.namedetails?.name || item.name || parts[0] || '').trim();
-            if (!rawName) return;
+            const rawName = (
+              item.namedetails?.name ||
+              item.name ||
+              tags.operator ||
+              parts[0] ||
+              '周邊停車場'
+            ).trim();
 
             const poiLat = Number(Number(item.lat).toFixed(6));
             const poiLng = Number(Number(item.lon).toFixed(6));
-            const poiName = rawName.includes('停車場') ? rawName : `${rawName}停車場`;
-            const poiAddr = parts.slice(0, 4).join(' ');
+            const poiName = rawName.includes('停車') ? rawName : `${rawName}停車場`;
+            const poiAddr = parts.slice(0, 4).join(' ') || 'OpenStreetMap 停車場';
             const id = `osm-poi-${item.place_id || idx}`;
             const parsedCap = Number.parseInt(String(tags.capacity ?? ''), 10);
             const totalSpaces = Number.isFinite(parsedCap) && parsedCap > 0 ? parsedCap : 0;
 
-            this.lots.set(id, {
-              id,
-              name: poiName,
-              city: '',
-              district: '',
-              address: poiAddr,
-              lat: poiLat,
-              lng: poiLng,
-              totalSpaces,
-              availableSpaces: -1,
-              hourlyRate: '依現場公告',
-              dataSource: 'NO_LIVE_DATA',
-              sourceTag: 'OSM圖資',
-              updatedAt: now
-            });
+            if (!this.lots.has(id)) {
+              this.lots.set(id, {
+                id,
+                name: poiName,
+                city: '',
+                district: '',
+                address: poiAddr,
+                lat: poiLat,
+                lng: poiLng,
+                totalSpaces,
+                availableSpaces: -1,
+                hourlyRate: tags.fee === 'no' ? '免費停車' : '依現場公告',
+                dataSource: 'NO_LIVE_DATA',
+                sourceTag: 'OSM圖資',
+                updatedAt: now
+              });
+            }
           });
         }
       }
     } catch {
       // Ignore network error
+    }
+  }
+
+  private async fetchOverpassParkingPois(
+    lat: number,
+    lng: number,
+    radiusMeters: number
+  ): Promise<boolean> {
+    const searchRadius = Math.min(Math.max(radiusMeters, 500), 5000);
+    const query = `[out:json][timeout:6];(node["amenity"="parking"](around:${searchRadius},${lat},${lng});way["amenity"="parking"](around:${searchRadius},${lat},${lng});relation["amenity"="parking"](around:${searchRadius},${lat},${lng}););out center tags 60;`;
+    try {
+      const res = await fetch('https://overpass-api.de/api/interpreter', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+        body: `data=${encodeURIComponent(query)}`,
+        signal: AbortSignal.timeout(5500)
+      });
+      if (!res.ok) return false;
+      const data = (await res.json()) as {
+        elements?: Array<{
+          type?: string;
+          id?: number;
+          lat?: number;
+          lon?: number;
+          center?: { lat?: number; lon?: number };
+          tags?: Record<string, string>;
+        }>;
+      };
+      const elements = Array.isArray(data.elements) ? data.elements : [];
+      const now = new Date().toISOString();
+      elements.forEach((el, idx) => {
+        const tags = el.tags ?? {};
+        if (tags.access === 'private' || tags.access === 'no') return;
+        const poiLat = Number((el.lat ?? el.center?.lat ?? 0).toFixed(6));
+        const poiLng = Number((el.lon ?? el.center?.lon ?? 0).toFixed(6));
+        if (!poiLat || !poiLng) return;
+
+        const baseName = (tags['name:zh'] || tags.name || tags.operator || tags.brand || '周邊停車場').trim();
+        const poiName = baseName.includes('停車') ? baseName : `${baseName}停車場`;
+        const road = tags['addr:street'] || '';
+        const houseNo = tags['addr:housenumber'] || '';
+        const poiAddr = road + houseNo || (tags.operator ? `${tags.operator} 場站` : 'OpenStreetMap 停車場');
+        const parsedCap = Number.parseInt(String(tags.capacity ?? ''), 10);
+        const totalSpaces = Number.isFinite(parsedCap) && parsedCap > 0 ? parsedCap : 0;
+        const id = `osm-ov-${el.type || 'n'}-${el.id || idx}`;
+
+        if (!this.lots.has(id)) {
+          this.lots.set(id, {
+            id,
+            name: poiName,
+            city: '',
+            district: '',
+            address: poiAddr,
+            lat: poiLat,
+            lng: poiLng,
+            totalSpaces,
+            availableSpaces: -1,
+            hourlyRate: tags.fee === 'no' ? '免費停車' : '依現場公告',
+            dataSource: 'NO_LIVE_DATA',
+            sourceTag: 'OSM圖資',
+            updatedAt: now
+          });
+        }
+      });
+      return elements.length > 0;
+    } catch {
+      return false;
     }
   }
 

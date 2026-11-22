@@ -240,15 +240,14 @@
     }
 
     function formatStopQuery(lot) {
+      if (Number.isFinite(lot.lat) && Number.isFinite(lot.lng)) {
+        return `${lot.lat},${lot.lng}`;
+      }
       const cleanName = cleanPlaceText(lot.name);
       const cleanAddr = cleanPlaceText(lot.address);
       const hasExactDoorplate = /\d+(?:之\d+)?號/.test(cleanAddr);
-      if (hasExactDoorplate && cleanName && !lot.id.startsWith('tpe-road-')) {
-        return cleanAddr.includes(cleanName) ? cleanAddr : `${cleanAddr} ${cleanName}`;
-      }
       if (hasExactDoorplate) return cleanAddr;
-      // No exact doorplate (e.g. "廍子路 廍子里 北屯區") -> MUST use exact lat,lng so Google Maps never routes to a wrong lot on the same road!
-      return `${lot.lat},${lot.lng}`;
+      return cleanName || cleanAddr;
     }
 
     function buildSingleNavUrl(lot) {
@@ -273,7 +272,10 @@
     let preloadPromise = null;
 
     async function geocodeQuery(q) {
-      const norm = q.trim().replace(/臺/g, '台');
+      const norm = q
+        .trim()
+        .replace(/臺/g, '台')
+        .replace(/([區鄉鎮市])[^\s區鄉鎮市]{1,4}[里村]/g, '$1');
       const coordMatch = norm.match(/^(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)$/);
       if (coordMatch) return { lat: Number(coordMatch[1]), lng: Number(coordMatch[2]), name: norm };
 
@@ -346,17 +348,23 @@
       }
     }
 
+    let customLotsQueue = [];
+    let resolvedCustomLots = false;
+
     async function loadGitHubSyncedData() {
       if (loadedPagesSnapshot) return;
       loadedPagesSnapshot = true;
 
       // 1. Instant localStorage warm cache (< 5ms)
       try {
-        const raw = localStorage.getItem('parking_snapshot_v1');
+        const raw = localStorage.getItem('parking_snapshot_v2');
         if (raw) {
           const cached = JSON.parse(raw);
           if (Date.now() - cached.savedAt < 300000) {
             applyParkingSnapshot(cached.offData, cached.roadData);
+            if (Array.isArray(cached.customData)) {
+              customLotsQueue = cached.customData;
+            }
             return;
           }
         }
@@ -364,44 +372,126 @@
 
       // 2. Parallel fetch from GitHub Pages CDN
       try {
-        const [offRes, roadRes] = await Promise.all([
+        const [offRes, roadRes, customRes] = await Promise.all([
           fetch('./data/live-parking.json'),
-          fetch('./data/taipei-roadside.json')
+          fetch('./data/taipei-roadside.json'),
+          fetch('./data/custom-parking.json')
         ]);
         const offData = offRes.ok ? await offRes.json() : null;
         const roadData = roadRes.ok ? await roadRes.json() : null;
+        const customData = customRes.ok ? await customRes.json() : [];
+        if (Array.isArray(customData)) {
+          customLotsQueue = customData;
+        }
         applyParkingSnapshot(offData, roadData);
         try {
-          localStorage.setItem('parking_snapshot_v1', JSON.stringify({ savedAt: Date.now(), offData, roadData }));
+          localStorage.setItem('parking_snapshot_v2', JSON.stringify({ savedAt: Date.now(), offData, roadData, customData }));
         } catch {}
       } catch {}
     }
+
+    async function ensureCustomLotsResolved() {
+      if (resolvedCustomLots || customLotsQueue.length === 0) return;
+      resolvedCustomLots = true;
+      await Promise.all(
+        customLotsQueue.map(async (lot) => {
+          if (Number.isFinite(lot.lat) && Number.isFinite(lot.lng)) {
+            lotsMap.set(lot.id, lot);
+            return;
+          }
+          const geo = await geocodeQuery(lot.address);
+          if (geo) {
+            lotsMap.set(lot.id, { ...lot, lat: geo.lat, lng: geo.lng });
+          }
+        })
+      );
+    }
+
+    const queriedOsmAreas = new Set();
 
     async function syncLiveParkingData(lat, lng, radius, destName) {
       if (preloadPromise) await preloadPromise;
       else await loadGitHubSyncedData();
 
-      // Only hit external Nominatim [parking] if ZERO official/roadside lots exist in radius
-      const existing = Array.from(lotsMap.values()).filter(l => calcDist(lat, lng, l.lat, l.lng) <= radius);
-      if (existing.length === 0) {
-        const d = Math.max(0.009, radius / 85000);
-        const vb = `${(lng - d).toFixed(5)},${(lat + d).toFixed(5)},${(lng + d).toFixed(5)},${(lat - d).toFixed(5)}`;
-        try {
-          const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=%5Bparking%5D&viewbox=${vb}&bounded=1&limit=25&namedetails=1&extratags=1&accept-language=zh-TW`, { signal: AbortSignal.timeout(3000) });
-          const items = await res.json();
-          if (Array.isArray(items)) {
-            items.forEach((item, idx) => {
-              const tags = item.extratags || {};
-              if (tags.access === 'private' || tags.access === 'no' || tags.parking === 'street_side' || tags.parking === 'lane') return;
-              const parts = (item.display_name || '').split(',').map(s => s.trim()).filter(Boolean);
-              const rawName = (item.namedetails?.name || item.name || parts[0] || '').trim();
-              if (!rawName) return;
-              const poiLat = Number(Number(item.lat).toFixed(6));
-              const poiLng = Number(Number(item.lon).toFixed(6));
-              const poiName = rawName.includes('停車場') ? rawName : `${rawName}停車場`;
-              const poiAddr = parts.slice(0, 4).join(' ');
-              const cap = parseInt(String(tags.capacity || ''), 10);
-              const id = `osm-${item.place_id || idx}`;
+      await ensureCustomLotsResolved();
+
+      // Always supplement with real-world OpenStreetMap parking POIs (Overpass API first, Nominatim fallback)
+      const areaKey = `${lat.toFixed(2)},${lng.toFixed(2)},${radius}`;
+      if (!queriedOsmAreas.has(areaKey)) {
+        queriedOsmAreas.add(areaKey);
+        const addedFromOverpass = await fetchOverpassParkingPois(lat, lng, radius);
+        if (!addedFromOverpass) {
+          await fetchNominatimParkingPois(lat, lng, radius);
+        }
+      }
+    }
+
+    async function fetchOverpassParkingPois(lat, lng, radius) {
+      const searchRadius = Math.min(Math.max(radius, 500), 5000);
+      const query = `[out:json][timeout:6];(node["amenity"="parking"](around:${searchRadius},${lat},${lng});way["amenity"="parking"](around:${searchRadius},${lat},${lng});relation["amenity"="parking"](around:${searchRadius},${lat},${lng}););out center tags 60;`;
+      try {
+        const res = await fetch('https://overpass-api.de/api/interpreter', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+          body: `data=${encodeURIComponent(query)}`,
+          signal: AbortSignal.timeout(5500)
+        });
+        if (!res.ok) return false;
+        const data = await res.json();
+        const elements = Array.isArray(data?.elements) ? data.elements : [];
+        elements.forEach((el, idx) => {
+          const tags = el.tags || {};
+          if (tags.access === 'private' || tags.access === 'no') return;
+          const poiLat = Number((el.lat ?? el.center?.lat ?? 0).toFixed(6));
+          const poiLng = Number((el.lon ?? el.center?.lon ?? 0).toFixed(6));
+          if (!poiLat || !poiLng) return;
+
+          const baseName = (tags['name:zh'] || tags.name || tags.operator || tags.brand || '周邊停車場').trim();
+          const poiName = baseName.includes('停車') ? baseName : `${baseName}停車場`;
+          const road = tags['addr:street'] || '';
+          const houseNo = tags['addr:housenumber'] || '';
+          const poiAddr = (road + houseNo) || (tags.operator ? `${tags.operator} 場站` : 'OpenStreetMap 停車場');
+          const cap = parseInt(String(tags.capacity || ''), 10);
+          const id = `osm-ov-${el.type || 'n'}-${el.id || idx}`;
+          if (!lotsMap.has(id)) {
+            lotsMap.set(id, {
+              id,
+              name: poiName,
+              address: poiAddr,
+              lat: poiLat,
+              lng: poiLng,
+              totalSpaces: Number.isFinite(cap) && cap > 0 ? cap : 0,
+              availableSpaces: -1,
+              hourlyRate: tags.fee === 'no' ? '免費停車' : '依現場公告',
+              sourceTag: 'OSM圖資'
+            });
+          }
+        });
+        return elements.length > 0;
+      } catch {
+        return false;
+      }
+    }
+
+    async function fetchNominatimParkingPois(lat, lng, radius) {
+      const d = Math.max(0.009, radius / 85000);
+      const vb = `${(lng - d).toFixed(5)},${(lat + d).toFixed(5)},${(lng + d).toFixed(5)},${(lat - d).toFixed(5)}`;
+      try {
+        const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=%5Bparking%5D&viewbox=${vb}&bounded=1&limit=30&namedetails=1&extratags=1&accept-language=zh-TW`, { signal: AbortSignal.timeout(3500) });
+        const items = await res.json();
+        if (Array.isArray(items)) {
+          items.forEach((item, idx) => {
+            const tags = item.extratags || {};
+            if (tags.access === 'private' || tags.access === 'no') return;
+            const parts = (item.display_name || '').split(',').map(s => s.trim()).filter(Boolean);
+            const rawName = (item.namedetails?.name || item.name || tags.operator || parts[0] || '周邊停車場').trim();
+            const poiLat = Number(Number(item.lat).toFixed(6));
+            const poiLng = Number(Number(item.lon).toFixed(6));
+            const poiName = rawName.includes('停車') ? rawName : `${rawName}停車場`;
+            const poiAddr = parts.slice(0, 4).join(' ') || 'OpenStreetMap 停車場';
+            const cap = parseInt(String(tags.capacity || ''), 10);
+            const id = `osm-${item.place_id || idx}`;
+            if (!lotsMap.has(id)) {
               lotsMap.set(id, {
                 id,
                 name: poiName,
@@ -410,13 +500,13 @@
                 lng: poiLng,
                 totalSpaces: Number.isFinite(cap) && cap > 0 ? cap : 0,
                 availableSpaces: -1,
-                hourlyRate: '依現場公告',
+                hourlyRate: tags.fee === 'no' ? '免費停車' : '依現場公告',
                 sourceTag: 'OSM圖資'
               });
-            });
-          }
-        } catch {}
-      }
+            }
+          });
+        }
+      } catch {}
     }
 
     async function performSearch() {
@@ -445,7 +535,7 @@
       const priority = { AVAILABLE: 1, LIMITED: 2, UNKNOWN: 3, FULL: 4 };
       const getSourceRank = lot => {
         const tag = lot.sourceTag || '';
-        const isGov = tag.startsWith('北市') || tag.startsWith('新北') || tag.startsWith('桃市') || tag.startsWith('台中');
+        const isGov = tag.startsWith('北市') || tag.startsWith('新北') || tag.startsWith('桃市') || tag.startsWith('台中') || tag === '民營場站';
         const hasLive = lot.availableSpaces >= 0 || lot.liveStatus === 'AVAILABLE' || lot.liveStatus === 'LIMITED' || lot.liveStatus === 'FULL';
         if (isGov && hasLive) return 1;
         if (isGov) return 2;

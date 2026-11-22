@@ -417,14 +417,68 @@ async function fetchTaichungOffStreet() {
   }
 }
 
+async function geocodeCustomAddress(address) {
+  const clean = String(address || '').trim().replace(/臺/g, '台');
+  if (!clean) return null;
+  try {
+    const res = await fetch(
+      `https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates?f=json&singleLine=${encodeURIComponent(clean)}&countryCode=TWN&searchExtent=119.3,21.8,122.2,25.45&maxLocations=1`,
+      { signal: AbortSignal.timeout(5000) }
+    );
+    if (res.ok) {
+      const data = await res.json();
+      const cand = data.candidates?.[0];
+      if (cand && cand.score >= 75 && cand.address !== '台灣') {
+        return { lat: Number(cand.location.y.toFixed(6)), lng: Number(cand.location.x.toFixed(6)) };
+      }
+    }
+  } catch {}
+  try {
+    const res = await fetch(
+      `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(clean)}&countrycodes=tw&limit=1`,
+      { headers: { 'User-Agent': 'SmartParkingFinderTW/1.0' }, signal: AbortSignal.timeout(5000) }
+    );
+    if (res.ok) {
+      const rows = await res.json();
+      if (Array.isArray(rows) && rows.length > 0) {
+        return { lat: Number(Number(rows[0].lat).toFixed(6)), lng: Number(Number(rows[0].lon).toFixed(6)) };
+      }
+    }
+  } catch {}
+  return null;
+}
+
+async function loadCustomParkingLots() {
+  try {
+    const raw = await fs.readFile(path.join(DATA_DIR, 'custom-parking.json'), 'utf8');
+    const items = JSON.parse(raw);
+    if (!Array.isArray(items)) return [];
+    const resolved = [];
+    for (const lot of items) {
+      if (Number.isFinite(lot.lat) && Number.isFinite(lot.lng)) {
+        resolved.push(lot);
+      } else {
+        const geo = await geocodeCustomAddress(lot.address);
+        if (geo) {
+          resolved.push({ ...lot, lat: geo.lat, lng: geo.lng });
+        }
+      }
+    }
+    return resolved;
+  } catch {
+    return [];
+  }
+}
+
 async function main() {
   await fs.mkdir(DATA_DIR, { recursive: true });
 
-  const [taipeiOffStreet, newTaipeiOffStreet, taoyuanOffStreet, taichungOffStreet] = await Promise.all([
+  const [taipeiOffStreet, newTaipeiOffStreet, taoyuanOffStreet, taichungOffStreet, customLots] = await Promise.all([
     fetchTaipeiOffStreet(),
     fetchNewTaipeiOffStreet(),
     fetchTaoyuanOffStreet(),
-    fetchTaichungOffStreet()
+    fetchTaichungOffStreet(),
+    loadCustomParkingLots()
   ]);
   const taipeiRoadside = await fetchTaipeiRoadside(taipeiOffStreet);
 
@@ -433,7 +487,8 @@ async function main() {
     ...taipeiOffStreet,
     ...newTaipeiOffStreet,
     ...taoyuanOffStreet,
-    ...taichungOffStreet
+    ...taichungOffStreet,
+    ...customLots
   ];
   const offStreetPayload = {
     updatedAt,
