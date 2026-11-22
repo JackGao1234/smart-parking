@@ -1,0 +1,29 @@
+[
+  {
+    "id": "custom-txg-unipark-changping",
+    "name": "台灣聯通停車場-台中昌平場",
+    "address": "台中市北屯區崇德十一路126號",
+    "totalSpaces": 0,
+    "availableSpaces": -1,
+    "hourlyRate": "依現場公告",
+    "sourceTag": "民營場站"
+  },
+  {
+    "id": "custom-txg-xingfu-chongde10",
+    "name": "幸福車房崇德十站",
+    "address": "台中市北屯區崇德十路一段407號",
+    "totalSpaces": 0,
+    "availableSpaces": -1,
+    "hourlyRate": "依現場公告",
+    "sourceTag": "民營場站"
+  },
+  {
+    "id": "custom-txg-fushan-chongde10",
+    "name": "富山停車-崇德十路場",
+    "address": "台中市北屯區崇德十路二段58號",
+    "totalSpaces": 0,
+    "availableSpaces": -1,
+    "hourlyRate": "依現場公告",
+    "sourceTag": "民營場站"
+  }
+]
