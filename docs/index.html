@@ -351,31 +351,34 @@
     let customLotsQueue = [];
     let resolvedCustomLots = false;
 
-    async function loadGitHubSyncedData() {
-      if (loadedPagesSnapshot) return;
+    async function loadGitHubSyncedData(forceRefresh = false) {
+      if (loadedPagesSnapshot && !forceRefresh) return;
       loadedPagesSnapshot = true;
 
       // 1. Instant localStorage warm cache (< 5ms)
-      try {
-        const raw = localStorage.getItem('parking_snapshot_v2');
-        if (raw) {
-          const cached = JSON.parse(raw);
-          if (Date.now() - cached.savedAt < 300000) {
-            applyParkingSnapshot(cached.offData, cached.roadData);
-            if (Array.isArray(cached.customData)) {
-              customLotsQueue = cached.customData;
+      if (!forceRefresh) {
+        try {
+          const raw = localStorage.getItem('parking_snapshot_v2');
+          if (raw) {
+            const cached = JSON.parse(raw);
+            if (Date.now() - cached.savedAt < 300000) {
+              applyParkingSnapshot(cached.offData, cached.roadData);
+              if (Array.isArray(cached.customData)) {
+                customLotsQueue = cached.customData;
+              }
+              return;
             }
-            return;
           }
-        }
-      } catch {}
+        } catch {}
+      }
 
       // 2. Parallel fetch from GitHub Pages CDN
       try {
+        const fetchOpts = forceRefresh ? { cache: 'no-store' } : undefined;
         const [offRes, roadRes, customRes] = await Promise.all([
-          fetch('./data/live-parking.json'),
-          fetch('./data/taipei-roadside.json'),
-          fetch('./data/custom-parking.json')
+          fetch('./data/live-parking.json', fetchOpts),
+          fetch('./data/taipei-roadside.json', fetchOpts),
+          fetch('./data/custom-parking.json', fetchOpts)
         ]);
         const offData = offRes.ok ? await offRes.json() : null;
         const roadData = roadRes.ok ? await roadRes.json() : null;
@@ -763,12 +766,22 @@
     document.getElementById('only-available-toggle').onchange = performSearch;
     document.getElementById('gps-btn').onclick = triggerGpsLocation;
     document.getElementById('refresh-btn').onclick = async () => {
-      try { localStorage.removeItem('parking_snapshot_v1'); } catch {}
-      loadedPagesSnapshot = false;
-      preloadPromise = loadGitHubSyncedData();
-      await preloadPromise;
-      if (lastSearchMode) await performSearch();
-      else triggerGpsLocation();
+      const btn = document.getElementById('refresh-btn');
+      btn.disabled = true;
+      btn.textContent = '⏳';
+      try {
+        try { localStorage.removeItem('parking_snapshot_v2'); } catch {}
+        loadedPagesSnapshot = false;
+        resolvedCustomLots = false;
+        queriedOsmAreas.clear();
+        preloadPromise = loadGitHubSyncedData(true);
+        await preloadPromise;
+        if (lastSearchMode) await performSearch();
+        else triggerGpsLocation();
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '🔄';
+      }
     };
 
     document.getElementById('results-container').onclick = e => {
