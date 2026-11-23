@@ -676,7 +676,7 @@
               <span class="distance-pill">${lot.distanceMeters}m</span>
             </div>
             <div class="vacancy-row vacancy-${lot.status}">
-              <span class="vacancy-badge"${lot.statusTooltip ? ` title="${lot.statusTooltip}" style="cursor:help;"` : ''}>${lot.statusLabel}</span>
+              <span class="vacancy-badge"${lot.statusTooltip ? ` title="${lot.statusTooltip}" data-base-label="${lot.statusLabel}" data-raw-label="${lot.statusLabel} (原始 ${lot.availableSpaces} / ${lot.totalSpaces > 0 ? lot.totalSpaces : '?'})" style="cursor:pointer; border-bottom:1px dotted currentColor;"` : ''}>${lot.statusLabel}</span>
               <span class="rate-text">${lot.hourlyRate}</span>
             </div>
             <div class="card-actions">
@@ -790,6 +790,13 @@
     };
 
     document.getElementById('results-container').onclick = e => {
+      const badge = e.target.closest('.vacancy-badge[data-raw-label]');
+      if (badge) {
+        const showingRaw = badge.dataset.showingRaw === '1';
+        badge.textContent = showingRaw ? badge.dataset.baseLabel : badge.dataset.rawLabel;
+        badge.dataset.showingRaw = showingRaw ? '0' : '1';
+        return;
+      }
       const btn = e.target.closest('.seq-toggle-btn');
       if (!btn) return;
       const id = btn.dataset.seqId;

@@ -272,7 +272,7 @@ function renderParkingLots() {
           </div>
 
           <div class="vacancy-row vacancy-${lot.status}">
-            <span class="vacancy-badge"${lot.statusTooltip ? ` title="${lot.statusTooltip}" style="cursor:help;"` : ''}>${lot.statusLabel}</span>
+            <span class="vacancy-badge"${lot.statusTooltip ? ` title="${lot.statusTooltip}" data-base-label="${lot.statusLabel}" data-raw-label="${lot.statusLabel} (原始 ${lot.availableSpaces} / ${lot.totalSpaces > 0 ? lot.totalSpaces : '?'})" style="cursor:pointer; border-bottom:1px dotted currentColor;"` : ''}>${lot.statusLabel}</span>
             <span class="rate-text">${lot.hourlyRate}</span>
           </div>
 
@@ -401,6 +401,13 @@ onlyAvailableToggle.addEventListener('change', () => performSearch());
 gpsBtn.addEventListener('click', () => triggerGpsLocation(true));
 
 resultsContainer.addEventListener('click', (e) => {
+  const badge = e.target.closest('.vacancy-badge[data-raw-label]');
+  if (badge) {
+    const showingRaw = badge.dataset.showingRaw === '1';
+    badge.textContent = showingRaw ? badge.dataset.baseLabel : badge.dataset.rawLabel;
+    badge.dataset.showingRaw = showingRaw ? '0' : '1';
+    return;
+  }
   const seqToggleBtn = e.target.closest('.seq-toggle-btn');
   if (!seqToggleBtn) return;
 
