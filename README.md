@@ -1,5 +1,7 @@
 # 🚗 智慧找車位與一鍵導航服務 (Smart Parking Finder)
 
+🌐 **線上使用網址 (GitHub Pages)**：https://jackgao1234.github.io/smart-parking/
+
 專為手機單手操作（如 Google Pixel）與行車前快速查詢設計的台灣停車場即時空位篩選與 Google Maps 一鍵導航服務。
 
 ## 核心特色
