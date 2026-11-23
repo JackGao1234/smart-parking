@@ -549,7 +549,11 @@
         .map(lot => {
           const distanceMeters = calcDist(dest.lat, dest.lng, lot.lat, lot.lng);
           const totalPart = lot.totalSpaces > 0 ? String(lot.totalSpaces) : '?';
-          let status = 'AVAILABLE', statusLabel = `🟢 ${lot.availableSpaces} / ${totalPart}`, canNavigate = true;
+          const isOverCapacity = lot.totalSpaces > 0 && lot.availableSpaces > lot.totalSpaces;
+          const displayAvail = isOverCapacity ? lot.totalSpaces : lot.availableSpaces;
+          const starSuffix = isOverCapacity ? ' *' : '';
+          const statusTooltip = isOverCapacity ? `原始回傳：${lot.availableSpaces} / ${totalPart}（超過總車位數）` : '';
+          let status = 'AVAILABLE', statusLabel = `🟢 ${displayAvail} / ${totalPart}${starSuffix}`, canNavigate = true;
           if (lot.availableSpaces < 0) {
             if (lot.liveStatus === 'AVAILABLE') {
               status = 'AVAILABLE';
@@ -571,13 +575,14 @@
             canNavigate = false;
           } else if (lot.availableSpaces <= 10) {
             status = 'LIMITED';
-            statusLabel = `🟡 ${lot.availableSpaces} / ${totalPart}`;
+            statusLabel = `🟡 ${displayAvail} / ${totalPart}${starSuffix}`;
           }
           return {
             ...lot,
             distanceMeters,
             status,
             statusLabel,
+            statusTooltip,
             sourceTag: lot.sourceTag || 'OSM圖資',
             canNavigate,
             googleMapsNavUrl: canNavigate ? buildSingleNavUrl(lot) : null
@@ -671,7 +676,7 @@
               <span class="distance-pill">${lot.distanceMeters}m</span>
             </div>
             <div class="vacancy-row vacancy-${lot.status}">
-              <span class="vacancy-badge">${lot.statusLabel}</span>
+              <span class="vacancy-badge"${lot.statusTooltip ? ` title="${lot.statusTooltip}" style="cursor:help;"` : ''}>${lot.statusLabel}</span>
               <span class="rate-text">${lot.hourlyRate}</span>
             </div>
             <div class="card-actions">

@@ -38,6 +38,7 @@ export interface ParkingLotView extends RawParkingLot {
   distanceMeters: number;
   status: VacancyStatus;
   statusLabel: string;
+  statusTooltip?: string;
   dataSourceLabel: string;
   /**
    * 1-based priority rank among navigable lots (1 = 1st choice, 2 = 2nd backup, etc.).

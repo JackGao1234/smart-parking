@@ -153,6 +153,12 @@ export function evaluateParkingNavigation(
   }
 
   const totalPart = lot.totalSpaces > 0 ? String(lot.totalSpaces) : '?';
+  const isOverCapacity = lot.totalSpaces > 0 && lot.availableSpaces > lot.totalSpaces;
+  const displayAvail = isOverCapacity ? lot.totalSpaces : lot.availableSpaces;
+  const starSuffix = isOverCapacity ? ' *' : '';
+  const statusTooltip = isOverCapacity
+    ? `原始回傳：${lot.availableSpaces} / ${totalPart}（超過總車位數）`
+    : undefined;
 
   let statusLabel = '';
   let canNavigate = false;
@@ -161,15 +167,15 @@ export function evaluateParkingNavigation(
 
   switch (status) {
     case 'AVAILABLE':
-      statusLabel = `🟢 ${lot.availableSpaces} / ${totalPart}`;
+      statusLabel = `🟢 ${displayAvail} / ${totalPart}${starSuffix}`;
       canNavigate = true;
       googleMapsNavUrl = buildGoogleMapsDrivingUrl(lot.lat, lot.lng, lot.name, lot.address);
       break;
 
     case 'LIMITED':
-      statusLabel = `🟡 ${lot.availableSpaces} / ${totalPart}`;
+      statusLabel = `🟡 ${displayAvail} / ${totalPart}${starSuffix}`;
       canNavigate = true;
-      warningMessage = `剩餘車位較少 (${lot.availableSpaces}/${totalPart})`;
+      warningMessage = `剩餘車位較少 (${displayAvail}/${totalPart})`;
       googleMapsNavUrl = buildGoogleMapsDrivingUrl(lot.lat, lot.lng, lot.name, lot.address);
       break;
 
@@ -195,6 +201,7 @@ export function evaluateParkingNavigation(
     distanceMeters,
     status,
     statusLabel,
+    ...(statusTooltip ? { statusTooltip } : {}),
     priorityRank: null,
     canNavigate,
     warningMessage,

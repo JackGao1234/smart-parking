@@ -272,7 +272,7 @@ function renderParkingLots() {
           </div>
 
           <div class="vacancy-row vacancy-${lot.status}">
-            <span class="vacancy-badge">${lot.statusLabel}</span>
+            <span class="vacancy-badge"${lot.statusTooltip ? ` title="${lot.statusTooltip}" style="cursor:help;"` : ''}>${lot.statusLabel}</span>
             <span class="rate-text">${lot.hourlyRate}</span>
           </div>
 

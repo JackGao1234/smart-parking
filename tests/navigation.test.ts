@@ -151,4 +151,15 @@ describe('Vacancy Classification & Google Maps Navigation Safety', () => {
     expect(view.googleMapsNavUrl).not.toBeNull();
     expect(view.warningMessage).toContain('非代表已滿位');
   });
+
+  it('caps available spaces at totalSpaces with "*" and exposes raw count in statusTooltip when API exceeds total', () => {
+    const view = evaluateParkingNavigation(
+      { ...baseLot, totalSpaces: 88, availableSpaces: 177 },
+      24.95405,
+      121.20355
+    );
+    expect(view.status).toBe('AVAILABLE');
+    expect(view.statusLabel).toBe('🟢 88 / 88 *');
+    expect(view.statusTooltip).toBe('原始回傳：177 / 88（超過總車位數）');
+  });
 });
