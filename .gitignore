@@ -3,3 +3,5 @@ dist/
 docs/data/
 .env
 .claude/progress.html
+test-results/
+playwright-report/
