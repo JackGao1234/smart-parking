@@ -1,5 +1,20 @@
 import { calculateDistanceMeters, twd97ToWgs84 } from '../core/geo.js';
 import { ParkingDataProvider, RawParkingLot } from '../core/types.js';
+import {
+  TAIPEI_AVAIL_URL,
+  TAIPEI_DESC_URL,
+  TAOYUAN_URL,
+  isStaleData,
+  parseTaipeiAvailability,
+  parseTaipeiDesc,
+  parseTaoyuanLots
+} from '../../docs/parking-core.js';
+
+/** Live lots whose source data is too old fall back to "no live data" (navigable, not FULL). */
+export function expireStaleLot(lot: RawParkingLot, now = Date.now()): RawParkingLot {
+  if (lot.dataSource !== 'LIVE_OPENDATA' || !isStaleData(lot.updatedAt, now)) return lot;
+  return { ...lot, availableSpaces: -1, dataSource: 'NO_LIVE_DATA' };
+}
 
 export const INITIAL_TAIWAN_PARKING_LOTS: RawParkingLot[] = [
   // === 台北小巨蛋 / 南京敦化商圈（真實公有與民營連線停車場） ===
@@ -643,7 +658,7 @@ export class TaiwanParkingProvider implements ParkingDataProvider {
       }
     }
 
-    return Array.from(this.lots.values());
+    return Array.from(this.lots.values(), (lot) => expireStaleLot(lot));
   }
 
   async updateVacancy(id: string, availableSpaces: number): Promise<RawParkingLot | null> {
@@ -666,60 +681,24 @@ export class TaiwanParkingProvider implements ParkingDataProvider {
     this.lastTaipeiSyncMs = Date.now();
     try {
       const [descRes, availRes] = await Promise.all([
-        fetch('https://tcgbusfs.blob.core.windows.net/blobtcmsv/TCMSV_alldesc.json', {
-          signal: AbortSignal.timeout(6000)
-        }),
-        fetch('https://tcgbusfs.blob.core.windows.net/blobtcmsv/TCMSV_allavailable.json', {
-          signal: AbortSignal.timeout(6000)
-        })
+        fetch(TAIPEI_DESC_URL, { signal: AbortSignal.timeout(10000) }),
+        fetch(TAIPEI_AVAIL_URL, { signal: AbortSignal.timeout(10000) })
       ]);
 
       if (!descRes.ok || !availRes.ok) return;
 
-      const descJson = (await descRes.json()) as {
-        data?: {
-          park?: Array<{
-            id: string;
-            name: string;
-            area: string;
-            address: string;
-            totalcar: number;
-            payex?: string;
-            tw97x: string | number;
-            tw97y: string | number;
-          }>;
-        };
-      };
-
-      const availJson = (await availRes.json()) as {
-        data?: {
-          park?: Array<{
-            id: string;
-            availablecar: number;
-          }>;
-        };
-      };
-
-      const parks = descJson.data?.park;
-      if (!Array.isArray(parks)) return;
-
-      const availMap = new Map<string, number>();
-      if (Array.isArray(availJson.data?.park)) {
-        for (const a of availJson.data.park) {
-          availMap.set(a.id, Number(a.availablecar));
-        }
-      }
-
-      const now = new Date().toISOString();
+      const parks = parseTaipeiDesc(await descRes.text());
+      const { updatedAt, spaces } = parseTaipeiAvailability(await availRes.text());
+      // No official timestamp means we cannot call the numbers live.
+      const now = updatedAt ?? new Date(0).toISOString();
       for (const p of parks) {
-        const x = Number(p.tw97x);
-        const y = Number(p.tw97y);
+        const { tw97x: x, tw97y: y } = p;
         if (!Number.isFinite(x) || !Number.isFinite(y) || x <= 0 || y <= 0) continue;
 
         const { lat, lng } = twd97ToWgs84(x, y);
         if (lat < 24.9 || lat > 25.3 || lng < 121.4 || lng > 121.7) continue;
 
-        const rawAvail = availMap.get(p.id);
+        const rawAvail = spaces.get(p.id);
         const hasLiveCarCount = rawAvail !== undefined && rawAvail >= 0;
         const availableSpaces = hasLiveCarCount ? rawAvail : -1;
 
@@ -737,7 +716,7 @@ export class TaiwanParkingProvider implements ParkingDataProvider {
           address: fullAddr,
           lat,
           lng,
-          totalSpaces: Number(p.totalcar) || 100,
+          totalSpaces: p.totalcar || 100,
           availableSpaces,
           hourlyRate: p.payex ? p.payex.slice(0, 32) : '依現場公告',
           dataSource: hasLiveCarCount ? 'LIVE_OPENDATA' : 'NO_LIVE_DATA',
@@ -753,51 +732,23 @@ export class TaiwanParkingProvider implements ParkingDataProvider {
   private async syncTaoyuanOpenData(): Promise<void> {
     this.lastTaoyuanSyncMs = Date.now();
     try {
-      const url =
-        'https://data.tycg.gov.tw/opendata/datalist/datasetMeta/download?id=f4cc0b12-86ac-40f9-8745-885bddc18f79&rid=0daad6e6-0632-44f5-bd25-5e1de1e9146f';
-      const res = await fetch(url, {
-        signal: AbortSignal.timeout(3500)
-      });
+      const res = await fetch(TAOYUAN_URL, { signal: AbortSignal.timeout(8000) });
       if (!res.ok) return;
 
-      const data = (await res.json()) as {
-        parkingLots?: Array<{
-          parkId: string;
-          parkName: string;
-          areaName: string;
-          address: string;
-          totalSpace: number;
-          surplusSpace: string | number;
-          payGuide?: string;
-          wgsX: number;
-          wgsY: number;
-        }>;
-      };
-
-      if (!Array.isArray(data.parkingLots)) return;
-
       const now = new Date().toISOString();
-      for (const item of data.parkingLots) {
-        const lat = Number(item.wgsY);
-        const lng = Number(item.wgsX);
-        if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < 24 || lat > 26) {
-          continue;
-        }
-        const parsedSurplus = Number.parseInt(String(item.surplusSpace), 10);
-        const hasLive = Number.isFinite(parsedSurplus) && parsedSurplus >= 0;
-        const availableSpaces = hasLive ? parsedSurplus : -1;
-
-        const id = `tycg-live-${item.parkId}`;
+      for (const item of parseTaoyuanLots(await res.json())) {
+        const hasLive = item.availableSpaces >= 0;
+        const id = `tycg-live-${item.id}`;
         this.lots.set(id, {
           id,
-          name: item.parkName,
+          name: item.name,
           city: '桃園市',
-          district: item.areaName || '',
-          address: `桃園市${item.areaName || ''}${item.address || ''}`,
-          lat,
-          lng,
-          totalSpaces: Number(item.totalSpace) || 100,
-          availableSpaces,
+          district: item.area,
+          address: `桃園市${item.area}${item.address}`,
+          lat: item.lat,
+          lng: item.lng,
+          totalSpaces: item.totalSpaces || 100,
+          availableSpaces: item.availableSpaces,
           hourlyRate: item.payGuide ? item.payGuide.slice(0, 28) : '依現場公告',
           dataSource: hasLive ? 'LIVE_OPENDATA' : 'NO_LIVE_DATA',
           sourceTag: hasLive ? '桃市交通' : '桃市交通(無訊號)',
