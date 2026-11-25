@@ -212,13 +212,24 @@
       <div>• <strong>北市停管</strong>：臺北市停車管理工程處 — 路外停車場即時剩餘車位 (TCMSV_alldesc / TCMSV_allavailable)</div>
       <div>• <strong>北市路邊</strong>：臺北市停車管理工程處 — 路邊停車格位即時地磁使用情形 (TCMSV_roadquery.xml)</div>
       <div>• <strong>新北交通</strong>：新北市政府資料開放平臺 — 路外公共停車場登記資訊 (data.ntpc.gov.tw)</div>
-      <div>• <strong>桃市交通</strong>：桃園市政府資料開放平台 — 路外停車資訊即時空位 API</div>
+      <div>• <strong>桃市交通</strong>：桃園市政府資料開放平台 — 路外停車資訊 (opendata.tycg.gov.tw)</div>
       <div>• <strong>台中交通</strong>：臺中市政府資料開放平臺 — 公／民營路外停車場總表與即時燈號 API</div>
       <div>• <strong>OSM圖資</strong>：OpenStreetMap Nominatim 公開地圖停車場地標（無即時剩餘格數連線，作為補充圖資）</div>
     </footer>
   </div>
 
-  <script>
+  <script type="module">
+    import {
+      TAICHUNG_LIVE_URL,
+      TAIPEI_AVAIL_URL,
+      describeFreshness,
+      evaluateVacancy,
+      hasVacancyData,
+      mergeTaichungLights,
+      mergeTaipeiAvailability,
+      parseTaipeiAvailability
+    } from './parking-core.js';
+
     const lotsMap = new Map();
     let roadsideList = [];
     let currentParkingLots = [];
@@ -324,18 +335,6 @@
 
     function applyParkingSnapshot(offData, roadData) {
       if (offData) {
-        if (offData.updatedAt) {
-          const d = new Date(offData.updatedAt);
-          const minsAgo = Math.max(0, Math.round((Date.now() - d.getTime()) / 60000));
-          const lbl = document.getElementById('sync-time-label');
-          if (minsAgo > 15) {
-            lbl.textContent = `(⚠️ 資料更新於 ${minsAgo} 分鐘前)`;
-            lbl.style.color = '#fbbf24';
-          } else {
-            lbl.textContent = `(即時更新於 ${minsAgo} 分鐘前 ‧ ${d.toLocaleTimeString('zh-TW', { hour12: false })})`;
-            lbl.style.color = '#34d399';
-          }
-        }
         (offData.lots || []).forEach(lot => lotsMap.set(lot.id, lot));
       }
       if (roadData) {
@@ -358,7 +357,7 @@
       // 1. Instant localStorage warm cache (< 5ms)
       if (!forceRefresh) {
         try {
-          const raw = localStorage.getItem('parking_snapshot_v2');
+          const raw = localStorage.getItem('parking_snapshot_v3');
           if (raw) {
             const cached = JSON.parse(raw);
             if (Date.now() - cached.savedAt < 300000) {
@@ -388,7 +387,7 @@
         }
         applyParkingSnapshot(offData, roadData);
         try {
-          localStorage.setItem('parking_snapshot_v2', JSON.stringify({ savedAt: Date.now(), offData, roadData, customData }));
+          localStorage.setItem('parking_snapshot_v3', JSON.stringify({ savedAt: Date.now(), offData, roadData, customData }));
         } catch {}
       } catch {}
     }
@@ -417,6 +416,7 @@
       else await loadGitHubSyncedData();
 
       await ensureCustomLotsResolved();
+      await refreshDirectLiveData(lat, lng);
 
       // Always supplement with real-world OpenStreetMap parking POIs (Overpass API first, Nominatim fallback)
       const areaKey = `${lat.toFixed(2)},${lng.toFixed(2)},${radius}`;
@@ -427,6 +427,38 @@
           await fetchNominatimParkingPois(lat, lng, radius);
         }
       }
+    }
+
+    // 快照可能是數小時前的，所以在台北、台中由手機直接抓官方即時資料（60 秒內不重抓）。
+    // 桃園平台不允許跨網域、路邊格檔案太大，這兩種只用快照；過期就顯示「無即時資料」。
+    const lastDirectFetch = new Map();
+
+    async function fetchDirect(key, url) {
+      if (Date.now() - (lastDirectFetch.get(key) || 0) < 60000) return null;
+      try {
+        const res = await fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(6000) });
+        if (!res.ok) return null;
+        const text = await res.text();
+        lastDirectFetch.set(key, Date.now());
+        return text;
+      } catch {
+        return null;
+      }
+    }
+
+    async function refreshDirectLiveData(lat, lng) {
+      const jobs = [];
+      if (lat >= 24.9 && lat <= 25.3 && lng >= 121.4 && lng <= 121.7) {
+        jobs.push(fetchDirect('taipei', TAIPEI_AVAIL_URL).then(xml => {
+          if (xml) mergeTaipeiAvailability(lotsMap, parseTaipeiAvailability(xml));
+        }));
+      }
+      if (lat >= 23.9 && lat <= 24.5 && lng >= 120.4 && lng <= 121.5) {
+        jobs.push(fetchDirect('taichung', TAICHUNG_LIVE_URL).then(json => {
+          if (json) mergeTaichungLights(lotsMap, JSON.parse(json), new Date().toISOString());
+        }));
+      }
+      await Promise.allSettled(jobs);
     }
 
     async function fetchOverpassParkingPois(lat, lng, radius) {
@@ -539,7 +571,7 @@
       const getSourceRank = lot => {
         const tag = lot.sourceTag || '';
         const isGov = tag.startsWith('北市') || tag.startsWith('新北') || tag.startsWith('桃市') || tag.startsWith('台中') || tag === '民營場站';
-        const hasLive = lot.availableSpaces >= 0 || lot.liveStatus === 'AVAILABLE' || lot.liveStatus === 'LIMITED' || lot.liveStatus === 'FULL';
+        const hasLive = hasVacancyData(lot) && !lot.isStale;
         if (isGov && hasLive) return 1;
         if (isGov) return 2;
         return 3;
@@ -548,47 +580,25 @@
       const withinRadius = Array.from(lotsMap.values())
         .map(lot => {
           const distanceMeters = calcDist(dest.lat, dest.lng, lot.lat, lot.lng);
-          const totalPart = lot.totalSpaces > 0 ? String(lot.totalSpaces) : '?';
-          const isOverCapacity = lot.totalSpaces > 0 && lot.availableSpaces > lot.totalSpaces;
-          const displayAvail = isOverCapacity ? lot.totalSpaces : lot.availableSpaces;
-          const starSuffix = isOverCapacity ? ' *' : '';
-          const statusTooltip = isOverCapacity ? `原始回傳：${lot.availableSpaces} / ${totalPart}（超過總車位數）` : '';
-          let status = 'AVAILABLE', statusLabel = `🟢 ${displayAvail} / ${totalPart}${starSuffix}`, canNavigate = true;
-          if (lot.availableSpaces < 0) {
-            if (lot.liveStatus === 'AVAILABLE') {
-              status = 'AVAILABLE';
-              statusLabel = `🟢 有位 (綠燈) / ${totalPart}`;
-            } else if (lot.liveStatus === 'LIMITED') {
-              status = 'LIMITED';
-              statusLabel = `🟡 較少 (黃燈) / ${totalPart}`;
-            } else if (lot.liveStatus === 'FULL') {
-              status = 'FULL';
-              statusLabel = `🚫 已滿 (紅燈) / ${totalPart}`;
-              canNavigate = false;
-            } else {
-              status = 'UNKNOWN';
-              statusLabel = `⚪ ? / ${totalPart} (無資料)`;
-            }
-          } else if (lot.availableSpaces === 0) {
-            status = 'FULL';
-            statusLabel = `🚫 0 / ${totalPart} (已滿位)`;
-            canNavigate = false;
-          } else if (lot.availableSpaces <= 10) {
-            status = 'LIMITED';
-            statusLabel = `🟡 ${displayAvail} / ${totalPart}${starSuffix}`;
-          }
+          const { status, statusLabel, statusTooltip, canNavigate, isStale } = evaluateVacancy(lot);
           return {
             ...lot,
             distanceMeters,
             status,
             statusLabel,
             statusTooltip,
+            isStale,
             sourceTag: lot.sourceTag || 'OSM圖資',
             canNavigate,
             googleMapsNavUrl: canNavigate ? buildSingleNavUrl(lot) : null
           };
         })
         .filter(l => l.distanceMeters <= radius);
+
+      const freshness = describeFreshness(withinRadius);
+      const freshnessLabel = document.getElementById('sync-time-label');
+      freshnessLabel.textContent = freshness.text;
+      freshnessLabel.style.color = freshness.fresh ? '#34d399' : '#fbbf24';
 
       // Deduplicate: Government / Live Open Data always takes priority over nearby OSM POIs (<= 80m)
       const govLots = withinRadius.filter(l => getSourceRank(l) <= 2);
@@ -775,9 +785,10 @@
       btn.disabled = true;
       btn.textContent = '⏳';
       try {
-        try { localStorage.removeItem('parking_snapshot_v2'); } catch {}
+        try { localStorage.removeItem('parking_snapshot_v3'); } catch {}
         loadedPagesSnapshot = false;
         resolvedCustomLots = false;
+        lastDirectFetch.clear();
         queriedOsmAreas.clear();
         preloadPromise = loadGitHubSyncedData(true);
         await preloadPromise;

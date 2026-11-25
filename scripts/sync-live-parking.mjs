@@ -1,11 +1,67 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  TAICHUNG_LIVE_URL,
+  TAIPEI_AVAIL_URL,
+  TAIPEI_DESC_URL,
+  TAOYUAN_URL,
+  hasVacancyData,
+  inferDataAt,
+  parseTaichungLight,
+  parseTaipeiAvailability,
+  parseTaipeiDesc,
+  parseTaoyuanLots
+} from '../docs/parking-core.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT_DIR = path.resolve(__dirname, '..');
 const DATA_DIR = path.join(ROOT_DIR, 'docs', 'data');
+
+async function fetchText(url, timeoutMs = 15000, attempts = 3) {
+  let lastError;
+  for (let i = 0; i < attempts; i++) {
+    if (i > 0) await new Promise((r) => setTimeout(r, 2000 * i));
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+      if (res.ok) return await res.text();
+      lastError = new Error(`HTTP ${res.status}`);
+    } catch (e) {
+      lastError = e;
+    }
+  }
+  throw new Error(`${url}: ${lastError?.message} ${lastError?.cause?.code ?? ''}`);
+}
+
+const PREVIOUS_SNAPSHOT_URL = 'https://jackgao1234.github.io/smart-parking/data/live-parking.json';
+
+/** 上一次部署的資料，用來判斷沒有時間欄位的來源是不是停住了。抓不到就當作沒有（＝不當即時）。 */
+async function fetchPreviousLots() {
+  try {
+    const { lots } = JSON.parse(await fetchText(PREVIOUS_SNAPSHOT_URL));
+    return new Map(lots.map((l) => [l.id, l]));
+  } catch (e) {
+    console.warn(`::warning::讀不到上一次的資料：${e.message}`);
+    return new Map();
+  }
+}
+
+function withInferredTime(label, lots, prevById) {
+  const dataAt = inferDataAt(lots, prevById, new Date().toISOString());
+  console.log(`${label} last observed change: ${dataAt ?? 'none (treated as not live)'}`);
+  return lots.map((l) => (dataAt && hasVacancyData(l) ? { ...l, dataAt, dataAtKind: 'observed' } : l));
+}
+
+/** 抓取失敗不再默默當成 0 筆：印出原因，由 main() 的筆數檢查讓整次同步失敗。 */
+async function orEmpty(label, fn) {
+  try {
+    return await fn();
+  } catch (e) {
+    console.error(`::error::${label} 抓取失敗：${e.message}`);
+    return [];
+  }
+}
 
 function twd97ToWgs84(x, y) {
   const a = 6378137.0;
@@ -52,44 +108,34 @@ function twd97ToWgs84(x, y) {
 }
 
 async function fetchTaipeiOffStreet() {
-  const [descRes, availRes] = await Promise.all([
-    fetch('https://tcgbusfs.blob.core.windows.net/blobtcmsv/TCMSV_alldesc.json', {
-      signal: AbortSignal.timeout(15000)
-    }),
-    fetch('https://tcgbusfs.blob.core.windows.net/blobtcmsv/TCMSV_allavailable.json', {
-      signal: AbortSignal.timeout(15000)
-    })
+  const [descXml, availXml] = await Promise.all([
+    fetchText(TAIPEI_DESC_URL, 30000),
+    fetchText(TAIPEI_AVAIL_URL, 30000)
   ]);
-  if (!descRes.ok || !availRes.ok) return [];
-
-  const descJson = await descRes.json();
-  const availJson = await availRes.json();
-  const availMap = new Map();
-  for (const a of availJson.data?.park ?? []) {
-    availMap.set(a.id, Number(a.availablecar));
-  }
+  const { updatedAt, spaces } = parseTaipeiAvailability(availXml);
+  console.log(`Taipei vacancy official time: ${updatedAt}`);
 
   const results = [];
-  for (const p of descJson.data?.park ?? []) {
-    const x = Number(p.tw97x);
-    const y = Number(p.tw97y);
+  for (const p of parseTaipeiDesc(descXml)) {
+    const { tw97x: x, tw97y: y } = p;
     if (!Number.isFinite(x) || !Number.isFinite(y) || x <= 0 || y <= 0) continue;
     const { lat, lng } = twd97ToWgs84(x, y);
     if (lat < 24.9 || lat > 25.3 || lng < 121.4 || lng > 121.7) continue;
 
-    const rawAvail = availMap.get(p.id);
+    const rawAvail = spaces.get(p.id);
     const hasLive = rawAvail !== undefined && rawAvail >= 0;
     results.push({
       id: `tpe-${p.id}`,
       name: p.name,
       address:
-        p.address?.startsWith('台北') || p.address?.startsWith('臺北')
+        p.address.startsWith('台北') || p.address.startsWith('臺北')
           ? p.address
-          : `台北市${p.area || ''}${p.address || ''}`,
+          : `台北市${p.area}${p.address}`,
       lat,
       lng,
-      totalSpaces: Number(p.totalcar) || 0,
+      totalSpaces: p.totalcar,
       availableSpaces: hasLive ? rawAvail : -1,
+      ...(hasLive ? { dataAt: updatedAt, dataAtKind: 'official' } : {}),
       hourlyRate: p.payex ? p.payex.slice(0, 32) : '依現場公告',
       sourceTag: '北市停管'
     });
@@ -100,150 +146,129 @@ async function fetchTaipeiOffStreet() {
 async function fetchNewTaipeiOffStreet() {
   const results = [];
   for (let page = 0; page < 3; page++) {
-    try {
-      const res = await fetch(
-        `https://data.ntpc.gov.tw/api/datasets/b1464ef0-9c7c-4a6f-abf7-6bdf32847e68/json?page=${page}&size=1000`,
-        { signal: AbortSignal.timeout(12000) }
-      );
-      if (!res.ok) break;
-      const rows = await res.json();
-      if (!Array.isArray(rows) || rows.length === 0) break;
+    const rows = JSON.parse(
+      await fetchText(
+        `https://data.ntpc.gov.tw/api/datasets/b1464ef0-9c7c-4a6f-abf7-6bdf32847e68/json?page=${page}&size=1000`
+      )
+    );
+    if (!Array.isArray(rows) || rows.length === 0) break;
 
-      for (const p of rows) {
-        const x = Number(p.TW97X);
-        const y = Number(p.TW97Y);
-        if (!Number.isFinite(x) || !Number.isFinite(y) || x <= 0 || y <= 0) continue;
-        const { lat, lng } = twd97ToWgs84(x, y);
-        if (lat < 24.6 || lat > 25.35 || lng < 121.25 || lng > 122.05) continue;
+    for (const p of rows) {
+      const x = Number(p.TW97X);
+      const y = Number(p.TW97Y);
+      if (!Number.isFinite(x) || !Number.isFinite(y) || x <= 0 || y <= 0) continue;
+      const { lat, lng } = twd97ToWgs84(x, y);
+      if (lat < 24.6 || lat > 25.35 || lng < 121.25 || lng > 122.05) continue;
 
-        const area = p.AREA || '';
-        const addr = p.ADDRESS || '';
-        const fullAddr = addr.startsWith('新北') ? addr : `新北市${area}${addr}`;
-        results.push({
-          id: `ntpc-${p.ID}`,
-          name: p.NAME,
-          address: fullAddr,
-          lat,
-          lng,
-          totalSpaces: Number(p.TOTALCAR) || 0,
-          availableSpaces: -1,
-          hourlyRate: p.PAYEX ? String(p.PAYEX).slice(0, 32) : '依現場公告',
-          sourceTag: '新北交通'
-        });
-      }
-      if (rows.length < 1000) break;
-    } catch {
-      break;
+      const area = p.AREA || '';
+      const addr = p.ADDRESS || '';
+      const fullAddr = addr.startsWith('新北') ? addr : `新北市${area}${addr}`;
+      results.push({
+        id: `ntpc-${p.ID}`,
+        name: p.NAME,
+        address: fullAddr,
+        lat,
+        lng,
+        totalSpaces: Number(p.TOTALCAR) || 0,
+        availableSpaces: -1,
+        hourlyRate: p.PAYEX ? String(p.PAYEX).slice(0, 32) : '依現場公告',
+        sourceTag: '新北交通'
+      });
     }
+    if (rows.length < 1000) break;
   }
   return results;
 }
 
 async function fetchTaoyuanOffStreet() {
-  try {
-    const res = await fetch(
-      'https://data.tycg.gov.tw/opendata/datalist/datasetMeta/download?id=f4cc0b12-86ac-40f9-8745-885bddc18f79&rid=0daad6e6-0632-44f5-bd25-5e1de1e9146f',
-      { signal: AbortSignal.timeout(15000) }
-    );
-    if (!res.ok) return [];
-    const data = await res.json();
-    const results = [];
-    for (const item of data.parkingLots ?? []) {
-      const lat = Number(item.wgsY);
-      const lng = Number(item.wgsX);
-      if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < 24 || lat > 26) continue;
-      const sur = Number.parseInt(String(item.surplusSpace), 10);
-      const hasLive = Number.isFinite(sur) && sur >= 0;
-      results.push({
-        id: `tycg-${item.parkId}`,
-        name: item.parkName,
-        address: `桃園市${item.areaName || ''}${item.address || ''}`,
-        lat: Number(lat.toFixed(6)),
-        lng: Number(lng.toFixed(6)),
-        totalSpaces: Number(item.totalSpace) || 0,
-        availableSpaces: hasLive ? sur : -1,
-        hourlyRate: item.payGuide ? item.payGuide.slice(0, 30) : '依現場公告',
-        sourceTag: '桃市交通'
-      });
-    }
-    return results;
-  } catch {
-    return [];
-  }
+  const rows = JSON.parse(await fetchText(TAOYUAN_URL));
+  return parseTaoyuanLots(rows).map((p) => ({
+    id: `tycg-${p.id}`,
+    name: p.name,
+    address: `桃園市${p.area}${p.address}`,
+    lat: p.lat,
+    lng: p.lng,
+    totalSpaces: p.totalSpaces,
+    availableSpaces: p.availableSpaces,
+    hourlyRate: p.payGuide ? p.payGuide.slice(0, 30) : '依現場公告',
+    sourceTag: '桃市交通'
+  }));
 }
 
 async function fetchTaipeiRoadside(offStreetLots) {
-  try {
-    const res = await fetch('https://tcgbusfs.blob.core.windows.net/blobtcmsv/TCMSV_roadquery.xml', {
-      signal: AbortSignal.timeout(20000)
-    });
-    if (!res.ok) return [];
-    const xml = await res.text();
-    const roads = [...xml.matchAll(/<ROAD>([\s\S]*?)<\/ROAD>/g)];
+  const xml = await fetchText(
+    'https://tcgbusfs.blob.core.windows.net/blobtcmsv/TCMSV_roadquery.xml',
+    40000
+  );
+  const now = Date.now();
+  const newest = [...xml.matchAll(/<data_Dt>(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})<\/data_Dt>/g)]
+    .map((m) => Date.parse(`${m[1]}T${m[2]}+08:00`))
+    .filter((t) => t <= now)
+    .reduce((a, b) => Math.max(a, b), 0);
+  const dataAt = newest ? new Date(newest).toISOString() : null;
+  const roads = [...xml.matchAll(/<ROAD>([\s\S]*?)<\/ROAD>/g)];
 
-    // Build a fast street-name -> centroid coordinate index from the 1,767 off-street lots
-    const streetIndex = [];
-    for (const lot of offStreetLots) {
-      const m = (lot.address || '').match(/([一-龥\d]+?(?:路|街|大道)(?:[一二三四五六七八九十]+段)?)/);
-      if (m) {
-        streetIndex.push({ street: m[1], lat: lot.lat, lng: lot.lng });
-      }
+  // Build a fast street-name -> centroid coordinate index from the 1,767 off-street lots
+  const streetIndex = [];
+  for (const lot of offStreetLots) {
+    const m = (lot.address || '').match(/([一-龥\d]+?(?:路|街|大道)(?:[一二三四五六七八九十]+段)?)/);
+    if (m) {
+      streetIndex.push({ street: m[1], lat: lot.lat, lng: lot.lng });
     }
-
-    const results = [];
-    for (const m of roads) {
-      const block = m[1];
-      const carType = block.match(/<roadSegCarType>([^<]*)<\/roadSegCarType>/)?.[1];
-      if (carType && carType !== '1') continue;
-
-      const id = block.match(/<roadSegID>([^<]*)<\/roadSegID>/)?.[1]?.trim();
-      const name = block.match(/<roadSegName>([^<]*)<\/roadSegName>/)?.[1]?.trim();
-      if (!id || !name) continue;
-
-      const total = Number.parseInt(
-        block.match(/<roadSegTotalValue>([^<]*)<\/roadSegTotalValue>/)?.[1] ?? '0',
-        10
-      );
-      const rawAvail = Number.parseInt(
-        block.match(/<roadSegAvail>([^<]*)<\/roadSegAvail>/)?.[1] ?? '-99',
-        10
-      );
-      const fee = block.match(/<roadSegFee>([^<]*)<\/roadSegFee>/)?.[1]?.trim() || '依現場收費牌';
-      const freeCells =
-        (block.match(/<cellStatus>2<\/cellStatus>/g) || []).length +
-        (block.match(/<cellStatus>0<\/cellStatus>/g) || []).length;
-      const occCells = (block.match(/<cellStatus>1<\/cellStatus>/g) || []).length;
-
-      let availableSpaces = -1;
-      if (rawAvail >= 0) {
-        availableSpaces = rawAvail;
-      } else if (freeCells > 0 || occCells > 0) {
-        availableSpaces = freeCells;
-      }
-
-      // Match street coordinate from off-street index (zero extra API calls!)
-      const baseStreet = name.replace(/\d+巷.*$/, '').replace(/\d+弄.*$/, '');
-      const hit =
-        streetIndex.find((s) => s.street === baseStreet) ||
-        streetIndex.find((s) => baseStreet.includes(s.street) || s.street.includes(baseStreet));
-
-      results.push({
-        id: `tpe-road-${id}`,
-        name: `${name} (路邊停車格)`,
-        roadName: name,
-        address: `台北市${name}`,
-        lat: hit ? hit.lat : null,
-        lng: hit ? hit.lng : null,
-        totalSpaces: Number.isFinite(total) ? total : 0,
-        availableSpaces,
-        hourlyRate: fee,
-        sourceTag: '北市路邊'
-      });
-    }
-    return results;
-  } catch {
-    return [];
   }
+
+  const results = [];
+  for (const m of roads) {
+    const block = m[1];
+    const carType = block.match(/<roadSegCarType>([^<]*)<\/roadSegCarType>/)?.[1];
+    if (carType && carType !== '1') continue;
+
+    const id = block.match(/<roadSegID>([^<]*)<\/roadSegID>/)?.[1]?.trim();
+    const name = block.match(/<roadSegName>([^<]*)<\/roadSegName>/)?.[1]?.trim();
+    if (!id || !name) continue;
+
+    const total = Number.parseInt(
+      block.match(/<roadSegTotalValue>([^<]*)<\/roadSegTotalValue>/)?.[1] ?? '0',
+      10
+    );
+    const rawAvail = Number.parseInt(
+      block.match(/<roadSegAvail>([^<]*)<\/roadSegAvail>/)?.[1] ?? '-99',
+      10
+    );
+    const fee = block.match(/<roadSegFee>([^<]*)<\/roadSegFee>/)?.[1]?.trim() || '依現場收費牌';
+    const freeCells =
+      (block.match(/<cellStatus>2<\/cellStatus>/g) || []).length +
+      (block.match(/<cellStatus>0<\/cellStatus>/g) || []).length;
+    const occCells = (block.match(/<cellStatus>1<\/cellStatus>/g) || []).length;
+
+    let availableSpaces = -1;
+    if (rawAvail >= 0) {
+      availableSpaces = rawAvail;
+    } else if (freeCells > 0 || occCells > 0) {
+      availableSpaces = freeCells;
+    }
+
+    // Match street coordinate from off-street index (zero extra API calls!)
+    const baseStreet = name.replace(/\d+巷.*$/, '').replace(/\d+弄.*$/, '');
+    const hit =
+      streetIndex.find((s) => s.street === baseStreet) ||
+      streetIndex.find((s) => baseStreet.includes(s.street) || s.street.includes(baseStreet));
+
+    results.push({
+      id: `tpe-road-${id}`,
+      name: `${name} (路邊停車格)`,
+      roadName: name,
+      address: `台北市${name}`,
+      lat: hit ? hit.lat : null,
+      lng: hit ? hit.lng : null,
+      totalSpaces: Number.isFinite(total) ? total : 0,
+      availableSpaces,
+      ...(availableSpaces >= 0 ? { dataAt, dataAtKind: 'official' } : {}),
+      hourlyRate: fee,
+      sourceTag: '北市路邊'
+    });
+  }
+  return results;
 }
 
 function parseCsvRows(text) {
@@ -288,133 +313,104 @@ function parseCsvRows(text) {
 }
 
 async function fetchTaichungOffStreet() {
-  try {
-    const [liveRes, coordRes, pubRes, privRes] = await Promise.all([
-      fetch(
-        'https://newdatacenter.taichung.gov.tw/api/v1/no-auth/resource.download?rid=4f9c4d26-d826-4277-8f8a-6d2469fe9653',
-        { signal: AbortSignal.timeout(15000) }
-      ),
-      fetch(
-        'https://newdatacenter.taichung.gov.tw/api/v1/no-auth/resource.download?rid=c047b32f-b57a-459c-abd4-5969885c60a6',
-        { signal: AbortSignal.timeout(15000) }
-      ),
-      fetch(
-        'https://newdatacenter.taichung.gov.tw/api/v1/no-auth/resource.download?rid=098d6e7d-9615-4f78-be30-d902436c9a02',
-        { signal: AbortSignal.timeout(15000) }
-      ),
-      fetch(
-        'https://newdatacenter.taichung.gov.tw/api/v1/no-auth/resource.download?rid=6e343cff-5508-47e2-8534-f34421b1e16b',
-        { signal: AbortSignal.timeout(15000) }
-      )
-    ]);
+  const base = 'https://newdatacenter.taichung.gov.tw/api/v1/no-auth/resource.download?rid=';
+  const [liveText, coordText, pubText, privText] = await Promise.all([
+    fetchText(TAICHUNG_LIVE_URL),
+    fetchText(`${base}c047b32f-b57a-459c-abd4-5969885c60a6`),
+    fetchText(`${base}098d6e7d-9615-4f78-be30-d902436c9a02`),
+    fetchText(`${base}6e343cff-5508-47e2-8534-f34421b1e16b`)
+  ]);
 
-    const coordMap = new Map();
-    if (coordRes.ok) {
-      const rows = parseCsvRows(await coordRes.text());
-      for (let i = 1; i < rows.length; i++) {
-        const [, , id, addr, latStr, lngStr] = rows[i];
-        const lat = Number(latStr);
-        const lng = Number(lngStr);
-        if (id && Number.isFinite(lat) && Number.isFinite(lng)) {
-          coordMap.set(String(id), { address: (addr || '').replace(/\?/g, ''), lat, lng });
-        }
-      }
+  const coordMap = new Map();
+  const rows = parseCsvRows(coordText);
+  for (let i = 1; i < rows.length; i++) {
+    const [, , id, addr, latStr, lngStr] = rows[i];
+    const lat = Number(latStr);
+    const lng = Number(lngStr);
+    if (id && Number.isFinite(lat) && Number.isFinite(lng)) {
+      coordMap.set(String(id), { address: (addr || '').replace(/\?/g, ''), lat, lng });
     }
+  }
 
-    const dirMap = new Map();
-    const ingestDir = (rows) => {
-      for (let i = 1; i < rows.length; i++) {
-        const [, , district, id, name, fee, hours, totalStr] = rows[i];
-        if (!id) continue;
-        dirMap.set(String(id), {
-          district: district || '',
-          name: name || '',
-          fee: fee || '',
-          hours: hours || '',
-          totalSpaces: Number.parseInt(String(totalStr || '0'), 10) || 0
-        });
-      }
-    };
-    if (pubRes.ok) ingestDir(parseCsvRows(await pubRes.text()));
-    if (privRes.ok) ingestDir(parseCsvRows(await privRes.text()));
-
-    const results = [];
-    const seenIds = new Set();
-
-    if (liveRes.ok) {
-      const liveList = await liveRes.json();
-      if (Array.isArray(liveList)) {
-        for (const item of liveList) {
-          const id = String(item.ID || '').trim();
-          if (!id || seenIds.has(id)) continue;
-          const c = coordMap.get(id);
-          const d = dirMap.get(id);
-          const lat = Number(item.Lat) || c?.lat;
-          const lng = Number(item.Lng) || c?.lng;
-          if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < 23.9 || lat > 24.5 || lng < 120.4 || lng > 121.5) {
-            continue;
-          }
-          seenIds.add(id);
-
-          const rawName = (item.Position || d?.name || '').trim();
-          const name = rawName.replace(/P(\([^)]+\))?$/, '停車場$1');
-          const totalCar = Number.parseInt(String(item.TotalCar || '0'), 10);
-          const totalSpaces = Number.isFinite(totalCar) && totalCar > 0 ? totalCar : d?.totalSpaces || 0;
-          const rgb = String(item.AvailableCarRGB || 'B').toUpperCase();
-
-          let availableSpaces = -1;
-          let liveStatus;
-          if (rgb === 'G') liveStatus = 'AVAILABLE';
-          else if (rgb === 'Y') liveStatus = 'LIMITED';
-          else if (rgb === 'R') {
-            availableSpaces = 0;
-            liveStatus = 'FULL';
-          }
-
-          const kw = String(item.KeyWord || '').split(/[\r\n]/)[0].trim();
-          const address = c?.address || (d?.district ? `臺中市${d.district}${kw}` : kw) || '臺中市';
-          const feeText = d?.fee ? d.fee.slice(0, 32) : '依現場公告';
-
-          results.push({
-            id: `txg-${id}`,
-            name,
-            address,
-            lat: Number(lat.toFixed(6)),
-            lng: Number(lng.toFixed(6)),
-            totalSpaces,
-            availableSpaces,
-            ...(liveStatus ? { liveStatus } : {}),
-            hourlyRate: feeText,
-            sourceTag: '台中交通'
-          });
-        }
-      }
+  const dirMap = new Map();
+  const ingestDir = (rows) => {
+    for (let i = 1; i < rows.length; i++) {
+      const [, , district, id, name, fee, hours, totalStr] = rows[i];
+      if (!id) continue;
+      dirMap.set(String(id), {
+        district: district || '',
+        name: name || '',
+        fee: fee || '',
+        hours: hours || '',
+        totalSpaces: Number.parseInt(String(totalStr || '0'), 10) || 0
+      });
     }
+  };
+  ingestDir(parseCsvRows(pubText));
+  ingestDir(parseCsvRows(privText));
 
-    // Include any directory+coord lots not present in liveList
-    for (const [id, c] of coordMap.entries()) {
-      if (seenIds.has(id)) continue;
-      if (c.lat < 23.9 || c.lat > 24.5 || c.lng < 120.4 || c.lng > 121.5) continue;
+  const results = [];
+  const seenIds = new Set();
+
+  const liveList = JSON.parse(liveText);
+  if (Array.isArray(liveList)) {
+    for (const item of liveList) {
+      const id = String(item.ID || '').trim();
+      if (!id || seenIds.has(id)) continue;
+      const c = coordMap.get(id);
       const d = dirMap.get(id);
-      const rawName = (d?.name || c.address || `停車場 ${id}`).trim();
+      const lat = Number(item.Lat) || c?.lat;
+      const lng = Number(item.Lng) || c?.lng;
+      if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < 23.9 || lat > 24.5 || lng < 120.4 || lng > 121.5) {
+        continue;
+      }
+      seenIds.add(id);
+
+      const rawName = (item.Position || d?.name || '').trim();
       const name = rawName.replace(/P(\([^)]+\))?$/, '停車場$1');
+      const totalCar = Number.parseInt(String(item.TotalCar || '0'), 10);
+      const totalSpaces = Number.isFinite(totalCar) && totalCar > 0 ? totalCar : d?.totalSpaces || 0;
+      const light = parseTaichungLight(item.AvailableCarRGB);
+
+      const kw = String(item.KeyWord || '').split(/[\r\n]/)[0].trim();
+      const address = c?.address || (d?.district ? `臺中市${d.district}${kw}` : kw) || '臺中市';
+      const feeText = d?.fee ? d.fee.slice(0, 32) : '依現場公告';
+
       results.push({
         id: `txg-${id}`,
         name,
-        address: c.address || `臺中市${d?.district || ''}`,
-        lat: Number(c.lat.toFixed(6)),
-        lng: Number(c.lng.toFixed(6)),
-        totalSpaces: d?.totalSpaces || 0,
-        availableSpaces: -1,
-        hourlyRate: d?.fee ? d.fee.slice(0, 32) : '依現場公告',
+        address,
+        lat: Number(lat.toFixed(6)),
+        lng: Number(lng.toFixed(6)),
+        totalSpaces,
+        ...light,
+        hourlyRate: feeText,
         sourceTag: '台中交通'
       });
     }
-
-    return results;
-  } catch {
-    return [];
   }
+
+  // Include any directory+coord lots not present in liveList
+  for (const [id, c] of coordMap.entries()) {
+    if (seenIds.has(id)) continue;
+    if (c.lat < 23.9 || c.lat > 24.5 || c.lng < 120.4 || c.lng > 121.5) continue;
+    const d = dirMap.get(id);
+    const rawName = (d?.name || c.address || `停車場 ${id}`).trim();
+    const name = rawName.replace(/P(\([^)]+\))?$/, '停車場$1');
+    results.push({
+      id: `txg-${id}`,
+      name,
+      address: c.address || `臺中市${d?.district || ''}`,
+      lat: Number(c.lat.toFixed(6)),
+      lng: Number(c.lng.toFixed(6)),
+      totalSpaces: d?.totalSpaces || 0,
+      availableSpaces: -1,
+      hourlyRate: d?.fee ? d.fee.slice(0, 32) : '依現場公告',
+      sourceTag: '台中交通'
+    });
+  }
+
+  return results;
 }
 
 async function geocodeCustomAddress(address) {
@@ -474,20 +470,35 @@ async function main() {
   await fs.mkdir(DATA_DIR, { recursive: true });
 
   const [taipeiOffStreet, newTaipeiOffStreet, taoyuanOffStreet, taichungOffStreet, customLots] = await Promise.all([
-    fetchTaipeiOffStreet(),
-    fetchNewTaipeiOffStreet(),
-    fetchTaoyuanOffStreet(),
-    fetchTaichungOffStreet(),
+    orEmpty('台北停車場', fetchTaipeiOffStreet),
+    orEmpty('新北停車場', fetchNewTaipeiOffStreet),
+    orEmpty('桃園停車場', fetchTaoyuanOffStreet),
+    orEmpty('台中停車場', fetchTaichungOffStreet),
     loadCustomParkingLots()
   ]);
-  const taipeiRoadside = await fetchTaipeiRoadside(taipeiOffStreet);
+  const taipeiRoadside = await orEmpty('台北路邊格', () => fetchTaipeiRoadside(taipeiOffStreet));
 
+  const counts = {
+    台北停車場: taipeiOffStreet.length,
+    新北停車場: newTaipeiOffStreet.length,
+    桃園停車場: taoyuanOffStreet.length,
+    台中停車場: taichungOffStreet.length,
+    台北路邊格: taipeiRoadside.length
+  };
+  const empty = Object.keys(counts).filter((k) => counts[k] === 0);
+  if (empty.length > 0) {
+    console.error(`::error::同步中止，以下來源是 0 筆：${empty.join('、')}。線上版維持上一次的資料。`);
+    process.exitCode = 1;
+    return;
+  }
+
+  const prevById = await fetchPreviousLots();
   const updatedAt = new Date().toISOString();
   const allOffStreet = [
     ...taipeiOffStreet,
     ...newTaipeiOffStreet,
-    ...taoyuanOffStreet,
-    ...taichungOffStreet,
+    ...withInferredTime('Taoyuan', taoyuanOffStreet, prevById),
+    ...withInferredTime('Taichung', taichungOffStreet, prevById),
     ...customLots
   ];
   const offStreetPayload = {
