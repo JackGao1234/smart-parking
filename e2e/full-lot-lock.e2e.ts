@@ -8,6 +8,7 @@ import {
   makeLot,
   minsAgo,
   openLivePage,
+  showOnlyAvailable,
   taipeiXml
 } from './fixtures';
 
@@ -72,10 +73,9 @@ test.describe('線上版滿位鎖導航', () => {
 
   test('開啟「僅看確認有位」時，滿位場不出現', async ({ page, context }) => {
     const full = makeLot(1, { availableSpaces: 0 });
-    await openLivePage(page, context, { lots: [full, makeLot(2)] });
-    await page.locator('#only-available-toggle').check();
-    await expect(card(page, full)).toHaveCount(0);
-    await expect(page.locator('.parking-card')).toHaveCount(1);
+    const open = makeLot(2);
+    await openLivePage(page, context, { lots: [full, open] });
+    await showOnlyAvailable(page, [open]);
   });
 });
 
@@ -135,7 +135,7 @@ test.describe('手機直抓資料與滿位鎖', () => {
 });
 
 test.describe('過期資料', () => {
-  test('超過 30 分鐘的滿位：改成無即時資料、可導航，並顯示警告', async ({ page, context }) => {
+  test('目前行為：超過 30 分鐘的滿位改成無即時資料、可導航，頁面標示沒有即時資料', async ({ page, context }) => {
     const stale = makeLot(1, { availableSpaces: 0, dataAt: minsAgo(45) });
     await openLivePage(page, context, { lots: [stale] });
     await expect(card(page, stale)).toHaveClass(/status-UNKNOWN/);
@@ -146,10 +146,11 @@ test.describe('過期資料', () => {
 
   test('過期的「有位」不能顯示成有位，也不會出現在僅看確認有位', async ({ page, context }) => {
     const stale = makeLot(1, { availableSpaces: 80, dataAt: minsAgo(45) });
-    await openLivePage(page, context, { lots: [stale, makeLot(2)] });
+    const open = makeLot(2);
+    await openLivePage(page, context, { lots: [stale, open] });
     await expect(card(page, stale)).toHaveClass(/status-UNKNOWN/);
     await expect(card(page, stale)).not.toContainText('80 / 100');
-    await page.locator('#only-available-toggle').check();
-    await expect(card(page, stale)).toHaveCount(0);
+    await showOnlyAvailable(page, [open]);
+    await expect(page.locator('#sequential-panel')).not.toContainText(stale.name);
   });
 });

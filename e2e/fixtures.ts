@@ -123,6 +123,15 @@ export async function expectLocked(page: Page, lot: Lot) {
   expect(hrefs.filter((h) => h.includes(coords(lot)))).toEqual([]);
 }
 
+/**
+ * 勾選「僅看確認有位」並等到清單剛好等於預期。
+ * 勾選後頁面會先清空成「查詢中」，只檢查某場「不存在」會在清空的瞬間假通過。
+ */
+export async function showOnlyAvailable(page: Page, expected: Lot[]) {
+  await page.locator('#only-available-toggle').check();
+  await expect(page.locator('.parking-card .lot-title')).toHaveText(expected.map((l) => l.name));
+}
+
 export async function expectNavigable(page: Page, lot: Lot) {
   const link = card(page, lot).locator('a.nav-btn');
   await expect(link).toHaveCount(1);
