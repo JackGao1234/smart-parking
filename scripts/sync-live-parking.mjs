@@ -7,6 +7,7 @@ import {
   TAIPEI_DESC_URL,
   TAOYUAN_URL,
   hasVacancyData,
+  inferDataAt,
   parseTaichungLight,
   parseTaipeiAvailability,
   parseTaipeiDesc,
@@ -31,6 +32,25 @@ async function fetchText(url, timeoutMs = 15000, attempts = 3) {
     }
   }
   throw new Error(`${url}: ${lastError?.message} ${lastError?.cause?.code ?? ''}`);
+}
+
+const PREVIOUS_SNAPSHOT_URL = 'https://jackgao1234.github.io/smart-parking/data/live-parking.json';
+
+/** 上一次部署的資料，用來判斷沒有時間欄位的來源是不是停住了。抓不到就當作沒有（＝不當即時）。 */
+async function fetchPreviousLots() {
+  try {
+    const { lots } = JSON.parse(await fetchText(PREVIOUS_SNAPSHOT_URL));
+    return new Map(lots.map((l) => [l.id, l]));
+  } catch (e) {
+    console.warn(`::warning::讀不到上一次的資料：${e.message}`);
+    return new Map();
+  }
+}
+
+function withInferredTime(label, lots, prevById) {
+  const dataAt = inferDataAt(lots, prevById, new Date().toISOString());
+  console.log(`${label} last observed change: ${dataAt ?? 'none (treated as not live)'}`);
+  return lots.map((l) => (dataAt && hasVacancyData(l) ? { ...l, dataAt, dataAtKind: 'observed' } : l));
 }
 
 /** 抓取失敗不再默默當成 0 筆：印出原因，由 main() 的筆數檢查讓整次同步失敗。 */
@@ -162,7 +182,6 @@ async function fetchNewTaipeiOffStreet() {
 
 async function fetchTaoyuanOffStreet() {
   const rows = JSON.parse(await fetchText(TAOYUAN_URL));
-  const fetchedAt = new Date().toISOString();
   return parseTaoyuanLots(rows).map((p) => ({
     id: `tycg-${p.id}`,
     name: p.name,
@@ -171,7 +190,6 @@ async function fetchTaoyuanOffStreet() {
     lng: p.lng,
     totalSpaces: p.totalSpaces,
     availableSpaces: p.availableSpaces,
-    ...(p.availableSpaces >= 0 ? { dataAt: fetchedAt, dataAtKind: 'fetched' } : {}),
     hourlyRate: p.payGuide ? p.payGuide.slice(0, 30) : '依現場公告',
     sourceTag: '桃市交通'
   }));
@@ -302,7 +320,6 @@ async function fetchTaichungOffStreet() {
     fetchText(`${base}098d6e7d-9615-4f78-be30-d902436c9a02`),
     fetchText(`${base}6e343cff-5508-47e2-8534-f34421b1e16b`)
   ]);
-  const fetchedAt = new Date().toISOString();
 
   const coordMap = new Map();
   const rows = parseCsvRows(coordText);
@@ -367,7 +384,6 @@ async function fetchTaichungOffStreet() {
         lng: Number(lng.toFixed(6)),
         totalSpaces,
         ...light,
-        ...(hasVacancyData(light) ? { dataAt: fetchedAt, dataAtKind: 'fetched' } : {}),
         hourlyRate: feeText,
         sourceTag: '台中交通'
       });
@@ -476,12 +492,13 @@ async function main() {
     return;
   }
 
+  const prevById = await fetchPreviousLots();
   const updatedAt = new Date().toISOString();
   const allOffStreet = [
     ...taipeiOffStreet,
     ...newTaipeiOffStreet,
-    ...taoyuanOffStreet,
-    ...taichungOffStreet,
+    ...withInferredTime('Taoyuan', taoyuanOffStreet, prevById),
+    ...withInferredTime('Taichung', taichungOffStreet, prevById),
     ...customLots
   ];
   const offStreetPayload = {

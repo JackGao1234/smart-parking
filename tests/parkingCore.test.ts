@@ -5,6 +5,7 @@ import {
   MAX_DATA_AGE_MS,
   describeFreshness,
   evaluateVacancy,
+  inferDataAt,
   isStaleData,
   mergeTaichungLights,
   mergeTaipeiAvailability,
@@ -113,6 +114,32 @@ describe('手機直抓資料合併', () => {
     expect(evaluateVacancy(map.get('txg-1')!, NOW)).toMatchObject({ status: 'AVAILABLE', canNavigate: true });
     mergeTaichungLights(map, [{ ID: '1', AvailableCarRGB: 'R' }], minsAgo(1));
     expect(evaluateVacancy(map.get('txg-1')!, NOW).canNavigate).toBe(false);
+  });
+});
+
+describe('沒有資料時間的來源（台中、桃園）', () => {
+  const prev = new Map<string, CoreLot>([
+    ['a', lot({ id: 'a', availableSpaces: 3, dataAt: minsAgo(150) })],
+    ['b', lot({ id: 'b', availableSpaces: 0, dataAt: minsAgo(150) })]
+  ]);
+  const now = minsAgo(0);
+
+  it('數字完全沒變：沿用舊時間，過期後不再當即時', () => {
+    const frozen = [lot({ id: 'a', availableSpaces: 3 }), lot({ id: 'b', availableSpaces: 0 })];
+    const dataAt = inferDataAt(frozen, prev, now);
+    expect(dataAt).toBe(minsAgo(150));
+    expect(evaluateVacancy({ ...frozen[1], dataAt }, NOW).status).toBe('UNKNOWN');
+  });
+
+  it('有任何變動才算即時；第一次沒有比較對象時不算', () => {
+    expect(inferDataAt([lot({ id: 'a', availableSpaces: 4 })], prev, now)).toBe(now);
+    expect(inferDataAt([lot({ id: 'a' })], new Map(), now)).toBeNull();
+  });
+
+  it('手機直抓台中：燈號全部沒變就不延長資料時間', () => {
+    const map = new Map<string, CoreLot>([['txg-1', lot({ ...parseTaichungLight('R'), dataAt: minsAgo(140) })]]);
+    expect(mergeTaichungLights(map, [{ ID: '1', AvailableCarRGB: 'R' }], now)).toBe(0);
+    expect(evaluateVacancy(map.get('txg-1')!, NOW).isStale).toBe(true);
   });
 });
 

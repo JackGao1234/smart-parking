@@ -4,7 +4,7 @@ export interface CoreLot {
   availableSpaces: number;
   liveStatus?: 'AVAILABLE' | 'LIMITED' | 'FULL';
   dataAt?: string | null;
-  dataAtKind?: 'official' | 'fetched';
+  dataAtKind?: 'official' | 'observed';
 }
 
 export interface VacancyEvaluation {
@@ -56,6 +56,11 @@ export function parseTaoyuanLots(rows: unknown): TaoyuanLot[];
 export function parseTaichungLight(rgb: unknown): Pick<CoreLot, 'availableSpaces' | 'liveStatus'>;
 export function hasVacancyData(lot: CoreLot): boolean;
 export function isStaleData(dataAt: string | null | undefined, now?: number): boolean;
+export function inferDataAt(
+  lots: CoreLot[],
+  prevById: ReadonlyMap<string, CoreLot>,
+  fetchedAt: string
+): string | null;
 export function evaluateVacancy(lot: CoreLot, now?: number): VacancyEvaluation;
 export function mergeTaipeiAvailability<T extends CoreLot>(lotsMap: Map<string, T>, data: TaipeiAvailability): number;
 export function mergeTaichungLights<T extends CoreLot>(lotsMap: Map<string, T>, rows: unknown, fetchedAt: string): number;

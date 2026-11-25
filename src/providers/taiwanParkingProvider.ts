@@ -4,6 +4,7 @@ import {
   TAIPEI_AVAIL_URL,
   TAIPEI_DESC_URL,
   TAOYUAN_URL,
+  inferDataAt,
   isStaleData,
   parseTaipeiAvailability,
   parseTaipeiDesc,
@@ -735,8 +736,18 @@ export class TaiwanParkingProvider implements ParkingDataProvider {
       const res = await fetch(TAOYUAN_URL, { signal: AbortSignal.timeout(8000) });
       if (!res.ok) return;
 
-      const now = new Date().toISOString();
-      for (const item of parseTaoyuanLots(await res.json())) {
+      const items = parseTaoyuanLots(await res.json());
+      // No official timestamp: only count as live once we have seen the numbers move.
+      const prev = new Map(
+        [...this.lots.values()].map((l) => [l.id, { ...l, dataAt: l.updatedAt }])
+      );
+      const now =
+        inferDataAt(
+          items.map((i) => ({ ...i, id: `tycg-live-${i.id}` })),
+          prev,
+          new Date().toISOString()
+        ) ?? new Date(0).toISOString();
+      for (const item of items) {
         const hasLive = item.availableSpaces >= 0;
         const id = `tycg-live-${item.id}`;
         this.lots.set(id, {

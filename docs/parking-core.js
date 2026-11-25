@@ -116,6 +116,25 @@ export function isStaleData(dataAt, now = Date.now()) {
   return age > MAX_DATA_AGE_MS || age < -MAX_CLOCK_SKEW_MS;
 }
 
+const sameVacancy = (a, b) =>
+  a.availableSpaces === b.availableSpaces && (a.liveStatus ?? '') === (b.liveStatus ?? '');
+
+/**
+ * 台中、桃園的 API 沒有資料時間，而且實測會整批停住不動。
+ * 所以只有跟上一份資料比對、確實有變動，才把 fetchedAt 當成資料時間；
+ * 完全沒變就沿用上一份的時間（沒有就回傳 null），讓停住的資料自然過期。
+ */
+export function inferDataAt(lots, prevById, fetchedAt) {
+  let prevAt = null;
+  for (const lot of lots) {
+    const prev = prevById.get(lot.id);
+    if (!prev) continue;
+    if (!sameVacancy(lot, prev)) return fetchedAt;
+    if (prev.dataAt && (!prevAt || Date.parse(prev.dataAt) > Date.parse(prevAt))) prevAt = prev.dataAt;
+  }
+  return prevAt;
+}
+
 /** 線上版唯一的車位狀態判斷。滿位（0 格或紅燈）一律 canNavigate = false。 */
 export function evaluateVacancy(lot, now = Date.now()) {
   const totalPart = lot.totalSpaces > 0 ? String(lot.totalSpaces) : '?';
@@ -179,15 +198,19 @@ export function mergeTaipeiAvailability(lotsMap, { updatedAt, spaces }) {
   return n;
 }
 
-/** 台中即時 API 沒有資料時間欄位，用抓取時間當 dataAt。 */
+/** 台中：跟快照比對，有任何一場燈號變動才套用；完全沒變就不延長資料時間。 */
 export function mergeTaichungLights(lotsMap, rows, fetchedAt) {
+  const incoming = (Array.isArray(rows) ? rows : []).map((item) => ({
+    id: `txg-${String(item.ID ?? '').trim()}`,
+    ...parseTaichungLight(item.AvailableCarRGB)
+  }));
+  if (inferDataAt(incoming, lotsMap, fetchedAt) !== fetchedAt) return 0;
   let n = 0;
-  for (const item of Array.isArray(rows) ? rows : []) {
-    const key = `txg-${String(item.ID ?? '').trim()}`;
-    const lot = lotsMap.get(key);
+  for (const next of incoming) {
+    const lot = lotsMap.get(next.id);
     if (!lot || isOlder(fetchedAt, lot.dataAt)) continue;
     const { liveStatus: _old, ...rest } = lot;
-    lotsMap.set(key, { ...rest, ...parseTaichungLight(item.AvailableCarRGB), dataAt: fetchedAt, dataAtKind: 'fetched' });
+    lotsMap.set(next.id, { ...rest, ...next, dataAt: fetchedAt, dataAtKind: 'observed' });
     n++;
   }
   return n;
@@ -199,6 +222,6 @@ export function describeFreshness(lots, now = Date.now()) {
   if (live.length === 0) return { fresh: false, text: '(⚠️ 附近沒有 30 分鐘內的即時空位資料)' };
   const oldest = live.reduce((a, b) => (Date.parse(a.dataAt) <= Date.parse(b.dataAt) ? a : b));
   const mins = Math.max(0, Math.round((now - Date.parse(oldest.dataAt)) / 60000));
-  const what = oldest.dataAtKind === 'official' ? '官方資料時間' : '抓取時間';
+  const what = oldest.dataAtKind === 'official' ? '官方資料時間' : '最近一次變動';
   return { fresh: true, text: `(${what}：${mins} 分鐘前)` };
 }
