@@ -20,7 +20,7 @@ jobs:
   build-and-deploy:
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      url: ${{ steps.deployment.outputs.page_url || steps.retry1.outputs.page_url || steps.retry2.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -42,6 +42,47 @@ jobs:
         with:
           path: docs
 
+      # 上傳完成後約 1 秒內，GitHub API 有時還查不到檔案（Found 0 artifact(s)），所以失敗就等一下再試。
       - name: Deploy to GitHub Pages
         id: deployment
+        continue-on-error: true
         uses: actions/deploy-pages@v4
+
+      - name: Wait before retry 1
+        if: steps.deployment.outcome == 'failure'
+        run: sleep 15
+
+      - name: Deploy to GitHub Pages (retry 1)
+        id: retry1
+        if: steps.deployment.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/deploy-pages@v4
+
+      - name: Wait before retry 2
+        if: steps.retry1.outcome == 'failure'
+        run: sleep 45
+
+      - name: Deploy to GitHub Pages (retry 2)
+        id: retry2
+        if: steps.retry1.outcome == 'failure'
+        uses: actions/deploy-pages@v4
+
+  # 失敗時開一張 issue 通知；已有未關閉的同名 issue 就不重複開。
+  notify-failure:
+    needs: build-and-deploy
+    if: failure()
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Open an issue unless one is already open
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title='資料同步或部署失敗'
+          open=$(gh issue list --state open --limit 200 --json title --jq "[.[] | select(.title == \"$title\")] | length")
+          if [ "$open" -eq 0 ]; then
+            gh issue create --title "$title" --body "失敗的執行紀錄：$RUN_URL 。修好後關閉這張 issue，下次失敗才會再通知。"
+          fi
