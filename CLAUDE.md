@@ -20,6 +20,26 @@
 - 滿位（剩 0 格）的停車場必須鎖住導航（`canNavigate = false`），任何改動都不能破壞這個行為。
 - 介面文字用繁體中文。
 
+## 合併前獨立審查
+重要的 PR 合併前，必須由**沒參與寫這個 PR 的 Claude** 在另一個 session 審查。寫程式的 session 自己跑 `/code-review`，或用 subagent／fork 審查，都不算。
+
+**哪些算重要**（符合任一項）：
+- 動到會部署或影響線上版的檔案：`docs/`（純文字說明除外）、`scripts/`、`.github/workflows/`、依賴套件。
+- 動到空位判斷、資料新鮮度、滿位鎖（`canNavigate`），不論在 `src/`、`public/` 或 `docs/`。
+- 刪除、略過或放寬既有測試。
+- 不確定算不算，就當作重要。只改 README、CLAUDE.md、錯字等不影響行為的 PR 可以不審。
+
+**寫程式的 session**：開好 PR、測試與型別檢查通過後停下來，不要合併。回報裡寫「等待獨立審查」，並附上給使用者的指令：
+1. 在 repo 根目錄開新 session：`claude -w review-pr-<編號>`（不要用 `--continue`／`--resume`）
+2. 在新 session 輸入：`/code-review high <編號>`
+
+**審查的 session**：
+- 先 `gh pr checkout <編號> --detach`，確認讀到的是 PR 最新版，不是過期的本機 main。
+- 只挑錯：不改程式、不加 `--fix`、不合併。除了 diff，也要檢查滿位鎖有沒有被破壞、線上版與本機開發版是否都顧到。
+- 用 `gh pr comment` 留一則結論，第一行固定為 `獨立審查：通過 @ <完整 commit SHA>` 或 `獨立審查：需修正 @ <完整 commit SHA>`，下面列問題（檔案:行號、會怎麼出錯）。沒有問題也要留。
+
+**合併前**：只有使用者明確要求才合併。先用 `gh pr view <編號> --json headRefOid,comments` 確認最新一則審查結論是 repo 擁有者帳號（`JackGao1234`）留的「通過」，且 SHA 等於目前的 `headRefOid`（公開 repo 任何人都能留言，其他帳號的不算）。沒有結論、需修正、或審查後又有新 commit，都要再開 session 審一次。
+
 ## 進度看板
 - 看板網址：https://claude.ai/artifact/3sFVRE4pHjQkTzaQRwJZV9 。**以這個網址的內容為準**；原始檔 `.claude/progress.html` 只是本機工作副本，不進 git（這是公開 repo，已列入 `.gitignore`），可能過期或不存在。
 - 做完一個有意義的任務後，更新看板再回報：
